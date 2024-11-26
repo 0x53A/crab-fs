@@ -1611,23 +1611,20 @@ impl SimpleFS {
         {
             // TODO
             warn!("mknod() implementation is incomplete. Only supports regular files, symlinks, and directories. Got {:o}", mode);
-            reply.error(libc::ENOSYS);
-            return;
+            return Err(libc::ENOSYS);
         }
-
+     
         if self.lookup_name(parent, name).is_ok() {
-            reply.error(libc::EEXIST);
-            return;
+            return Err(libc::EEXIST);
         }
-
+     
         let mut parent_attrs = match self.get_inode(parent) {
             Ok(attrs) => attrs,
             Err(error_code) => {
-                reply.error(error_code);
-                return;
+                return Err(error_code);
             }
         };
-
+     
         if !check_access(
             parent_attrs.uid,
             parent_attrs.gid,
@@ -1636,17 +1633,16 @@ impl SimpleFS {
             req.gid(),
             libc::W_OK,
         ) {
-            reply.error(libc::EACCES);
-            return;
+            return Err(libc::EACCES);
         }
         parent_attrs.last_modified = time_now();
         parent_attrs.last_metadata_changed = time_now();
         self.write_inode(&parent_attrs);
-
+     
         if req.uid() != 0 {
             mode &= !(libc::S_ISUID | libc::S_ISGID) as u32;
         }
-
+     
         let inode = self.allocate_next_inode();
         let attrs = InodeAttributes {
             inode,
@@ -1664,20 +1660,24 @@ impl SimpleFS {
         };
         self.write_inode(&attrs);
         File::create(self.content_path(inode)).unwrap();
-
+     
         if as_file_kind(mode) == FileKind::Directory {
             let mut entries = BTreeMap::new();
             entries.insert(b".".to_vec(), (inode, FileKind::Directory));
             entries.insert(b"..".to_vec(), (parent, FileKind::Directory));
             self.write_directory_content(inode, entries);
         }
-
+     
         let mut entries = self.get_directory_content(parent).unwrap();
         entries.insert(name.as_bytes().to_vec(), (inode, attrs.kind));
         self.write_directory_content(parent, entries);
-
+     
         // TODO: implement flags
-        reply.entry(&Duration::new(0, 0), &attrs.into(), 0);
+        Ok(ReplyEntryOk {
+            ttl: Duration::new(0, 0),
+            attrs: attrs.into(),
+            generation: 0
+        })
      }
 
     fn symlink_syn(
