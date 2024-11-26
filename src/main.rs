@@ -1714,183 +1714,84 @@ impl SimpleFS {
         name: &OsStr,
         new_parent: u64,
         new_name: &OsStr,
-        flags: u32,) -> ReplyEmptyResult {
-
-            debug!(
-                "rename() called with: source {parent:?} {name:?}, \
-                destination {new_parent:?} {new_name:?}, flags {flags:#b}",
-            );
-            let mut inode_attrs = match self.lookup_name(parent, name) {
-                Ok(attrs) => attrs,
-                Err(error_code) => {
-                    reply.error(error_code);
-                    return;
-                }
-            };
-    
-            let mut parent_attrs = match self.get_inode(parent) {
-                Ok(attrs) => attrs,
-                Err(error_code) => {
-                    reply.error(error_code);
-                    return;
-                }
-            };
-    
-            if !check_access(
-                parent_attrs.uid,
-                parent_attrs.gid,
-                parent_attrs.mode,
-                req.uid(),
-                req.gid(),
-                libc::W_OK,
-            ) {
-                reply.error(libc::EACCES);
-                return;
+        flags: u32,
+    ) -> ReplyEmptyResult {
+        debug!(
+            "rename() called with: source {parent:?} {name:?}, \
+            destination {new_parent:?} {new_name:?}, flags {flags:#b}",
+        );
+        let mut inode_attrs = match self.lookup_name(parent, name) {
+            Ok(attrs) => attrs,
+            Err(error_code) => {
+                return Err(error_code);
             }
+        };
     
-            // "Sticky bit" handling
-            if parent_attrs.mode & libc::S_ISVTX as u16 != 0
-                && req.uid() != 0
-                && req.uid() != parent_attrs.uid
-                && req.uid() != inode_attrs.uid
-            {
-                reply.error(libc::EACCES);
-                return;
+        let mut parent_attrs = match self.get_inode(parent) {
+            Ok(attrs) => attrs,
+            Err(error_code) => {
+                return Err(error_code);
             }
+        };
     
-            let mut new_parent_attrs = match self.get_inode(new_parent) {
-                Ok(attrs) => attrs,
-                Err(error_code) => {
-                    reply.error(error_code);
-                    return;
-                }
-            };
+        if !check_access(
+            parent_attrs.uid,
+            parent_attrs.gid,
+            parent_attrs.mode,
+            req.uid(),
+            req.gid(),
+            libc::W_OK,
+        ) {
+            return Err(libc::EACCES);
+        }
     
-            if !check_access(
-                new_parent_attrs.uid,
-                new_parent_attrs.gid,
-                new_parent_attrs.mode,
-                req.uid(),
-                req.gid(),
-                libc::W_OK,
-            ) {
-                reply.error(libc::EACCES);
-                return;
+        // "Sticky bit" handling
+        if parent_attrs.mode & libc::S_ISVTX as u16 != 0
+            && req.uid() != 0
+            && req.uid() != parent_attrs.uid
+            && req.uid() != inode_attrs.uid
+        {
+            return Err(libc::EACCES);
+        }
+    
+        let mut new_parent_attrs = match self.get_inode(new_parent) {
+            Ok(attrs) => attrs,
+            Err(error_code) => {
+                return Err(error_code);
             }
+        };
     
-            // "Sticky bit" handling in new_parent
-            if new_parent_attrs.mode & libc::S_ISVTX as u16 != 0 {
-                if let Ok(existing_attrs) = self.lookup_name(new_parent, new_name) {
-                    if req.uid() != 0
-                        && req.uid() != new_parent_attrs.uid
-                        && req.uid() != existing_attrs.uid
-                    {
-                        reply.error(libc::EACCES);
-                        return;
-                    }
-                }
-            }
+        if !check_access(
+            new_parent_attrs.uid,
+            new_parent_attrs.gid,
+            new_parent_attrs.mode,
+            req.uid(),
+            req.gid(),
+            libc::W_OK,
+        ) {
+            return Err(libc::EACCES);
+        }
     
-            #[cfg(target_os = "linux")]
-            if flags & libc::RENAME_EXCHANGE as u32 != 0 {
-                let mut new_inode_attrs = match self.lookup_name(new_parent, new_name) {
-                    Ok(attrs) => attrs,
-                    Err(error_code) => {
-                        reply.error(error_code);
-                        return;
-                    }
-                };
-    
-                let mut entries = self.get_directory_content(new_parent).unwrap();
-                entries.insert(
-                    new_name.as_bytes().to_vec(),
-                    (inode_attrs.inode, inode_attrs.kind),
-                );
-                self.write_directory_content(new_parent, entries);
-    
-                let mut entries = self.get_directory_content(parent).unwrap();
-                entries.insert(
-                    name.as_bytes().to_vec(),
-                    (new_inode_attrs.inode, new_inode_attrs.kind),
-                );
-                self.write_directory_content(parent, entries);
-    
-                parent_attrs.last_metadata_changed = time_now();
-                parent_attrs.last_modified = time_now();
-                self.write_inode(&parent_attrs);
-                new_parent_attrs.last_metadata_changed = time_now();
-                new_parent_attrs.last_modified = time_now();
-                self.write_inode(&new_parent_attrs);
-                inode_attrs.last_metadata_changed = time_now();
-                self.write_inode(&inode_attrs);
-                new_inode_attrs.last_metadata_changed = time_now();
-                self.write_inode(&new_inode_attrs);
-    
-                if inode_attrs.kind == FileKind::Directory {
-                    let mut entries = self.get_directory_content(inode_attrs.inode).unwrap();
-                    entries.insert(b"..".to_vec(), (new_parent, FileKind::Directory));
-                    self.write_directory_content(inode_attrs.inode, entries);
-                }
-                if new_inode_attrs.kind == FileKind::Directory {
-                    let mut entries = self.get_directory_content(new_inode_attrs.inode).unwrap();
-                    entries.insert(b"..".to_vec(), (parent, FileKind::Directory));
-                    self.write_directory_content(new_inode_attrs.inode, entries);
-                }
-    
-                reply.ok();
-                return;
-            }
-    
-            // Only overwrite an existing directory if it's empty
-            if let Ok(new_name_attrs) = self.lookup_name(new_parent, new_name) {
-                if new_name_attrs.kind == FileKind::Directory
-                    && self
-                        .get_directory_content(new_name_attrs.inode)
-                        .unwrap()
-                        .len()
-                        > 2
+        // "Sticky bit" handling in new_parent
+        if new_parent_attrs.mode & libc::S_ISVTX as u16 != 0 {
+            if let Ok(existing_attrs) = self.lookup_name(new_parent, new_name) {
+                if req.uid() != 0
+                    && req.uid() != new_parent_attrs.uid
+                    && req.uid() != existing_attrs.uid
                 {
-                    reply.error(libc::ENOTEMPTY);
-                    return;
+                    return Err(libc::EACCES);
                 }
             }
+        }
     
-            // Only move an existing directory to a new parent, if we have write access to it,
-            // because that will change the ".." link in it
-            if inode_attrs.kind == FileKind::Directory
-                && parent != new_parent
-                && !check_access(
-                    inode_attrs.uid,
-                    inode_attrs.gid,
-                    inode_attrs.mode,
-                    req.uid(),
-                    req.gid(),
-                    libc::W_OK,
-                )
-            {
-                reply.error(libc::EACCES);
-                return;
-            }
-    
-            // If target already exists decrement its hardlink count
-            if let Ok(mut existing_inode_attrs) = self.lookup_name(new_parent, new_name) {
-                let mut entries = self.get_directory_content(new_parent).unwrap();
-                entries.remove(new_name.as_bytes());
-                self.write_directory_content(new_parent, entries);
-    
-                if existing_inode_attrs.kind == FileKind::Directory {
-                    existing_inode_attrs.hardlinks = 0;
-                } else {
-                    existing_inode_attrs.hardlinks -= 1;
+        #[cfg(target_os = "linux")]
+        if flags & libc::RENAME_EXCHANGE as u32 != 0 {
+            let mut new_inode_attrs = match self.lookup_name(new_parent, new_name) {
+                Ok(attrs) => attrs,
+                Err(error_code) => {
+                    return Err(error_code);
                 }
-                existing_inode_attrs.last_metadata_changed = time_now();
-                self.write_inode(&existing_inode_attrs);
-                self.gc_inode(&existing_inode_attrs);
-            }
-    
-            let mut entries = self.get_directory_content(parent).unwrap();
-            entries.remove(name.as_bytes());
-            self.write_directory_content(parent, entries);
+            };
     
             let mut entries = self.get_directory_content(new_parent).unwrap();
             entries.insert(
@@ -1898,6 +1799,13 @@ impl SimpleFS {
                 (inode_attrs.inode, inode_attrs.kind),
             );
             self.write_directory_content(new_parent, entries);
+    
+            let mut entries = self.get_directory_content(parent).unwrap();
+            entries.insert(
+                name.as_bytes().to_vec(),
+                (new_inode_attrs.inode, new_inode_attrs.kind),
+            );
+            self.write_directory_content(parent, entries);
     
             parent_attrs.last_metadata_changed = time_now();
             parent_attrs.last_modified = time_now();
@@ -1907,14 +1815,95 @@ impl SimpleFS {
             self.write_inode(&new_parent_attrs);
             inode_attrs.last_metadata_changed = time_now();
             self.write_inode(&inode_attrs);
+            new_inode_attrs.last_metadata_changed = time_now();
+            self.write_inode(&new_inode_attrs);
     
             if inode_attrs.kind == FileKind::Directory {
                 let mut entries = self.get_directory_content(inode_attrs.inode).unwrap();
                 entries.insert(b"..".to_vec(), (new_parent, FileKind::Directory));
                 self.write_directory_content(inode_attrs.inode, entries);
             }
+            if new_inode_attrs.kind == FileKind::Directory {
+                let mut entries = self.get_directory_content(new_inode_attrs.inode).unwrap();
+                entries.insert(b"..".to_vec(), (parent, FileKind::Directory));
+                self.write_directory_content(new_inode_attrs.inode, entries);
+            }
     
-            reply.ok();
+            return Ok(());
+        }
+    
+        // Only overwrite an existing directory if it's empty
+        if let Ok(new_name_attrs) = self.lookup_name(new_parent, new_name) {
+            if new_name_attrs.kind == FileKind::Directory
+                && self
+                    .get_directory_content(new_name_attrs.inode)
+                    .unwrap()
+                    .len()
+                    > 2
+            {
+                return Err(libc::ENOTEMPTY);
+            }
+        }
+    
+        // Only move an existing directory to a new parent, if we have write access to it,
+        // because that will change the ".." link in it
+        if inode_attrs.kind == FileKind::Directory
+            && parent != new_parent
+            && !check_access(
+                inode_attrs.uid,
+                inode_attrs.gid,
+                inode_attrs.mode,
+                req.uid(),
+                req.gid(),
+                libc::W_OK,
+            )
+        {
+            return Err(libc::EACCES);
+        }
+    
+        // If target already exists decrement its hardlink count
+        if let Ok(mut existing_inode_attrs) = self.lookup_name(new_parent, new_name) {
+            let mut entries = self.get_directory_content(new_parent).unwrap();
+            entries.remove(new_name.as_bytes());
+            self.write_directory_content(new_parent, entries);
+    
+            if existing_inode_attrs.kind == FileKind::Directory {
+                existing_inode_attrs.hardlinks = 0;
+            } else {
+                existing_inode_attrs.hardlinks -= 1;
+            }
+            existing_inode_attrs.last_metadata_changed = time_now();
+            self.write_inode(&existing_inode_attrs);
+            self.gc_inode(&existing_inode_attrs);
+        }
+    
+        let mut entries = self.get_directory_content(parent).unwrap();
+        entries.remove(name.as_bytes());
+        self.write_directory_content(parent, entries);
+    
+        let mut entries = self.get_directory_content(new_parent).unwrap();
+        entries.insert(
+            new_name.as_bytes().to_vec(),
+            (inode_attrs.inode, inode_attrs.kind),
+        );
+        self.write_directory_content(new_parent, entries);
+    
+        parent_attrs.last_metadata_changed = time_now();
+        parent_attrs.last_modified = time_now();
+        self.write_inode(&parent_attrs);
+        new_parent_attrs.last_metadata_changed = time_now();
+        new_parent_attrs.last_modified = time_now();
+        self.write_inode(&new_parent_attrs);
+        inode_attrs.last_metadata_changed = time_now();
+        self.write_inode(&inode_attrs);
+    
+        if inode_attrs.kind == FileKind::Directory {
+            let mut entries = self.get_directory_content(inode_attrs.inode).unwrap();
+            entries.insert(b"..".to_vec(), (new_parent, FileKind::Directory));
+            self.write_directory_content(inode_attrs.inode, entries);
+        }
+    
+        Ok(())
     }
 
 
