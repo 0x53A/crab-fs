@@ -134,7 +134,7 @@ pub struct FilesystemWriter {
 }
 
 impl FilesystemWriter {
-    pub fn new(data_dir: PathBuf) {
+    pub fn new(data_dir: PathBuf) -> Self {
         Self {
             data_dir
         }

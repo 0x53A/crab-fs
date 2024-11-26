@@ -319,7 +319,12 @@ impl SimpleFS {
     }
 
     fn creation_mode(&self, mode: u32) -> u16 {
-        if !self.suid_support {
+        #[cfg(feature = "abi-7-26")]
+        let suid_support = self.suid_support;
+        #[cfg(not(feature = "abi-7-26"))]
+        let suid_support = false;
+
+        if !suid_support {
             (mode & !(libc::S_ISUID | libc::S_ISGID) as u32) as u16
         } else {
             mode as u16
@@ -332,7 +337,7 @@ impl SimpleFS {
 
     fn allocate_next_file_handle(&self, inode: Inode, read: bool, write: bool) -> u64 {
 
-        let mut fh = self.next_file_handle.fetch_add(1, Ordering::SeqCst);
+        let mut fh = self.state.next_file_handle.fetch_add(1, Ordering::SeqCst);
         // Assert that we haven't run out of file handles
         assert!(fh < u64::MAX);
 
@@ -342,14 +347,14 @@ impl SimpleFS {
         }
         
         // Store the permissions
-        let mut handles = self.file_handles.write().unwrap();
+        let mut handles = self.state.open_file_handles.write().unwrap();
         handles.insert(fh, FileHandleEntry { inode, permissions: FilePermissions { can_read: read, can_write: write }});
         
         fh
     }
 
     fn check_file_handle_read(&self, file_handle: u64) -> bool {
-        self.file_handles.read()
+        self.state.open_file_handles.read()
             .unwrap()
             .get(&file_handle)
             .map(|perms| perms.can_read)
@@ -357,7 +362,7 @@ impl SimpleFS {
     }
 
     fn check_file_handle_write(&self, file_handle: u64) -> bool {
-        self.file_handles.read()
+        self.state.open_file_handles.read()
             .unwrap()
             .get(&file_handle)
             .map(|perms| perms.can_write)
@@ -409,7 +414,7 @@ impl SimpleFS {
         // Clear SETUID & SETGID on truncate
         clear_suid_sgid(&mut attrs);
 
-        assert(&ic.attrs == &attrs);
+        assert!(&ic.attrs == &attrs);
         ic.content = new_content;
         self.repository.write_inode(ie.attrs.inode, &ie);
 
