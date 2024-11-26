@@ -953,23 +953,9 @@ impl Filesystem for SimpleFS {
         mode: i32,
         reply: ReplyEmpty,
     ) {
-        let path = self.content_path(inode);
-        if let Ok(file) = OpenOptions::new().write(true).open(path) {
-            unsafe {
-                libc::fallocate64(file.into_raw_fd(), mode, offset, length);
-            }
-            if mode & libc::FALLOC_FL_KEEP_SIZE == 0 {
-                let mut attrs = self.get_inode(inode).unwrap();
-                attrs.last_metadata_changed = time_now();
-                attrs.last_modified = time_now();
-                if (offset + length) as u64 > attrs.size {
-                    attrs.size = (offset + length) as u64;
-                }
-                self.write_inode(&attrs);
-            }
-            reply.ok();
-        } else {
-            reply.error(libc::ENOENT);
+        match self.fallocate_syn(_req, inode, _fh, offset, length, mode) {
+            Ok(()) => reply.ok(),
+            Err(error_code) => reply.error(error_code)
         }
     }
 
@@ -986,51 +972,12 @@ impl Filesystem for SimpleFS {
         _flags: u32,
         reply: ReplyWrite,
     ) {
-        debug!(
-            "copy_file_range() called with src ({}, {}, {}) dest ({}, {}, {}) size={}",
-            src_fh, src_inode, src_offset, dest_fh, dest_inode, dest_offset, size
-        );
-        if !self.check_file_handle_read(src_fh) {
-            reply.error(libc::EACCES);
-            return;
-        }
-        if !self.check_file_handle_write(dest_fh) {
-            reply.error(libc::EACCES);
-            return;
-        }
-
-        let src_path = self.content_path(src_inode);
-        if let Ok(file) = File::open(src_path) {
-            let file_size = file.metadata().unwrap().len();
-            // Could underflow if file length is less than local_start
-            let read_size = min(size, file_size.saturating_sub(src_offset as u64));
-
-            let mut data = vec![0; read_size as usize];
-            file.read_exact_at(&mut data, src_offset as u64).unwrap();
-
-            let dest_path = self.content_path(dest_inode);
-            if let Ok(mut file) = OpenOptions::new().write(true).open(dest_path) {
-                file.seek(SeekFrom::Start(dest_offset as u64)).unwrap();
-                file.write_all(&data).unwrap();
-
-                let mut attrs = self.get_inode(dest_inode).unwrap();
-                attrs.last_metadata_changed = time_now();
-                attrs.last_modified = time_now();
-                if data.len() + dest_offset as usize > attrs.size as usize {
-                    attrs.size = (data.len() + dest_offset as usize) as u64;
-                }
-                self.write_inode(&attrs);
-
-                reply.written(data.len() as u32);
-            } else {
-                reply.error(libc::EBADF);
-            }
-        } else {
-            reply.error(libc::ENOENT);
+        match self.copy_file_range_syn(_req, src_inode, src_fh, src_offset, dest_inode, dest_fh, dest_offset, size, _flags) {
+            Ok(ok) => reply.written(ok.written),
+            Err(error_code) => reply.error(error_code)
         }
     }
 }
-
 // ------------------------------------------------------------------------------------------
 // impl Syn
 
@@ -2171,7 +2118,129 @@ fn setattr_syn(
         })
     }
 
+    
+    #[cfg(target_os = "linux")]
+    fn fallocate_syn(
+        &mut self,
+        _req: &Request<'_>,
+        inode: u64,
+        _fh: u64,
+        offset: i64,
+        length: i64,
+        mode: i32,
+    ) -> ReplyEmptyResult {
+        let mut ic = self.get_inode(inode)?;
+        let file_content = Self::assume_file(&ic)?;
+    
+        todo!();
+        // todo: repository fallocate or sth 
+        unsafe {
+            libc::fallocate64(file.into_raw_fd(), mode, offset, length);
+        }
+        
+        if mode & libc::FALLOC_FL_KEEP_SIZE == 0 {
+            ic.attrs.last_metadata_changed = time_now();
+            ic.attrs.last_modified = time_now();
+            if (offset + length) as u64 > ic.attrs.size {
+                ic.attrs.size = (offset + length) as u64;
+            }
+            self.repository.write_inode(inode, &ic)?;
+        }
+        
+        Ok(())
+    }
+
+    
+    
+    fn copy_file_range_syn(
+        &mut self,
+        _req: &Request<'_>,
+        src_inode: u64,
+        src_fh: u64,
+        src_offset: i64,
+        dest_inode: u64,
+        dest_fh: u64,
+        dest_offset: i64,
+        size: u64,
+        _flags: u32,
+    ) -> ReplyWriteResult {
+        debug!(
+            "copy_file_range() called with src ({}, {}, {}) dest ({}, {}, {}) size={}",
+            src_fh, src_inode, src_offset, dest_fh, dest_inode, dest_offset, size
+        );
+        
+        if !self.check_file_handle_read(src_fh) {
+            return Err(libc::EACCES);
+        }
+        if !self.check_file_handle_write(dest_fh) {
+            return Err(libc::EACCES);
+        }
+    
+        todo!();
+
+        // original:
+
+        /*
+        
+                let src_path = self.content_path(src_inode);
+        if let Ok(file) = File::open(src_path) {
+            let file_size = file.metadata().unwrap().len();
+            // Could underflow if file length is less than local_start
+            let read_size = min(size, file_size.saturating_sub(src_offset as u64));
+
+            let mut data = vec![0; read_size as usize];
+            file.read_exact_at(&mut data, src_offset as u64).unwrap();
+
+            let dest_path = self.content_path(dest_inode);
+            if let Ok(mut file) = OpenOptions::new().write(true).open(dest_path) {
+                file.seek(SeekFrom::Start(dest_offset as u64)).unwrap();
+                file.write_all(&data).unwrap();
+
+                let mut attrs = self.get_inode(dest_inode).unwrap();
+                attrs.last_metadata_changed = time_now();
+                attrs.last_modified = time_now();
+                if data.len() + dest_offset as usize > attrs.size as usize {
+                    attrs.size = (data.len() + dest_offset as usize) as u64;
+                }
+                self.write_inode(&attrs);
+
+                reply.written(data.len() as u32);
+            } else {
+                reply.error(libc::EBADF);
+            }
+        } else {
+            reply.error(libc::ENOENT);
+        }
+
+         */
+
+        let src_ie = self.get_inode(src_inode)?;
+        let src_content = Self::assume_file(&src_ie)?;
+        
+        // Could underflow if file length is less than local_start
+        let read_size = min(size, src_ie.attrs.size.saturating_sub(src_offset as u64));
+    
+        let mut data = vec![0; read_size as usize];
+        self.repository.read_chunk(src_content, src_offset as usize, &mut data)?;
+    
+        let mut dest_ie = self.get_inode(dest_inode)?;
+        let dest_content = Self::assume_file(&dest_ie)?;
+        
+        self.repository.write_chunk(dest_content, dest_offset as usize, &data)?;
+    
+        dest_ie.attrs.last_metadata_changed = time_now();
+        dest_ie.attrs.last_modified = time_now();
+        if data.len() + dest_offset as usize > dest_ie.attrs.size as usize {
+            dest_ie.attrs.size = (data.len() + dest_offset as usize) as u64;
+        }
+        self.repository.write_inode(dest_inode, &dest_ie)?;
+    
+        Ok(ReplyWriteOk {
+            written: data.len() as u32
+        })
+    }
 }
+
 
 
 // -------------------------------------------------------------------------------------------
