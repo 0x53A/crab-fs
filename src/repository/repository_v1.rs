@@ -251,6 +251,10 @@ impl RepositoryV1 {
         let ic = self.writer.get_inode(parent);
 
     }
+
+    pub fn read_buffer(&self, fc: &FileContent, offset: i64, size: u32) -> Vec<u8> {
+
+    }
 }
 
 // ------------------------

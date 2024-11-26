@@ -416,7 +416,7 @@ impl SimpleFS {
         Ok(())
     }
 
-    fn try_find_directory_entry(parent: DirectoryDescriptor,  name: &OsStr) -> Option<(Inode, FileKind)> {
+    fn try_find_directory_entry(parent: &DirectoryDescriptor,  name: &OsStr) -> Option<(Inode, FileKind)> {
         parent.get(name.as_bytes())
     }
 
@@ -429,7 +429,37 @@ impl SimpleFS {
         }
     }
     
-    fn 
+    #[must_use]
+    fn assume_directory<'a>(ie: &'a InodeEntry) -> Result<&'a DirectoryDescriptor, c_int> {
+        match &parent_node.content {
+            InodeContent::File(_) | InodeContent::Symlink(_) => {
+                return Err(libc::ENOTDIR);
+            },
+            InodeContent::Directory(dir_content) => {
+                dir_content
+            }
+        };
+    }
+
+    #[must_use]
+    fn assume_file<'a>(ie: &'a InodeEntry) -> Result<&'a FileContent, c_int> {
+        match &parent_node.content {
+            InodeContent::Directory(_) | InodeContent::Symlink(_) => {
+                return Err(libc::EISDIR);
+            },
+            InodeContent::File(file_content) => {
+                file_content
+            }
+        };
+    }
+
+    #[must_use]
+    fn require_not_exist(parent: &DirectoryDescriptor, name: &OsStr) -> Result<(), c_int> {        
+        if Self::try_find_directory_entry(parent, dir_content).is_some() {
+            return Err(libc::EEXIST);
+        }
+        return Ok(());
+    }
 
 
     fn insert_link(
@@ -442,31 +472,15 @@ impl SimpleFS {
     ) -> Result<(), c_int> {
         let mut parent_node = self.get_inode(parent)?;
 
-        let mut dir_content = match &parent_node.content {
-            InodeContent::File(_) | InodeContent::Symlink(_) => {
-                return Err(libc::ENOTDIR);
-            },
-            InodeContent::Directory(dir_content) => {
-                dir_content
-            }
-        };
-        
-        if Self::try_find_directory_entry(parent_node, dir_content).is_some() {
-            return Err(libc::EEXIST);
-        }
+        let mut dir_content = Self::assume_directory(&parent_node)?;
+
+        Self::require_not_exist(dir_content, name)?;
 
         let mut parent_attrs = &parent_node.attrs;
 
-        if !check_access(
-            parent_attrs.uid,
-            parent_attrs.gid,
-            parent_attrs.mode,
-            req.uid(),
-            req.gid(),
-            libc::W_OK,
-        ) {
-            return Err(libc::EACCES);
-        }
+        check_access_rq(parent_attrs, req, libc::W_OK)?;
+
+
         parent_attrs.last_modified = time_now();
         parent_attrs.last_metadata_changed = time_now();
 
@@ -1653,32 +1667,15 @@ impl SimpleFS {
             parent, link_name, target
         );
         let mut parent_node = self.get_inode(parent)?;
-
-        let mut parent_attrs = &parent_node.attrs;
-
-        check_access_rq(parent_attrs, req)?;
-
-        let mut dir_content = match &parent_node.content {
-            InodeContent::File(_) | InodeContent::Symlink(_) => {
-                return Err(libc::ENOTDIR);
-            },
-            InodeContent::Directory(dir_content) => {
-                dir_content
-            }
-        };
-
-        if Self::try_find_directory_entry(parent_node, dir_content).is_some() {
-            return Err(libc::EEXIST);
-        }
-
-        parent_attrs.last_modified = time_now();
-        parent_attrs.last_metadata_changed = time_now();
-        self.write_inode(&parent_attrs);
-
+    
+        check_access_rq(&parent_node.attrs, req, libc::W_OK)?;
+        let mut dir_content = Self::assume_directory(&parent_node)?;
+    
+        Self::require_not_exist(dir_content, name)?;
+    
         let inode = self.allocate_next_inode();
         let attrs = InodeAttributes {
             inode,
-            // open_file_handles: 0,
             size: target.as_os_str().as_bytes().len() as u64,
             last_accessed: time_now(),
             last_modified: time_now(),
@@ -1687,31 +1684,27 @@ impl SimpleFS {
             mode: 0o777,
             hardlinks: 1,
             uid: req.uid(),
-            gid: creation_gid(&parent_attrs, req.gid()),
+            gid: creation_gid(&parent_node.attrs, req.gid()),
             xattrs: Default::default(),
         };
-        let ie = InodeEntry { attrs, content: InodeContent::Symlink(target.as_os_str().as_bytes()) };
-        self.repository.write_inode(inode, &ie);
+        
+        let ie = InodeEntry { 
+            attrs: attrs.clone(), 
+            content: InodeContent::Symlink(target.as_os_str().as_bytes().to_vec()) 
+        };
+        self.repository.write_inode(inode, &ie)?;
+    
+    
+        parent_node.attrs.last_modified = time_now();
+        parent_node.attrs.last_metadata_changed = time_now();
+        dir_content.insert(link_name.as_bytes().to_vec(), (inode, FileKind::Symlink));
+        self.repository.write_inode(parent, &parent_node)?;
 
-        if let Err(error_code) = self.insert_link(req, parent, link_name, inode, FileKind::Symlink)
-        {
-            reply.error(error_code);
-            return;
-        }
-
-
-        self.write_inode(&attrs);
-
-        let path = self.content_path(inode);
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(path)
-            .unwrap();
-        file.write_all(target.as_os_str().as_bytes()).unwrap();
-
-        reply.entry(&Duration::new(0, 0), &attrs.into(), 0);
+        Ok(ReplyEntryOk {
+            ttl: Duration::new(0, 0),
+            attrs: attrs.into(),
+            generation: 0
+        })
     }
 
     fn rename_syn(
@@ -1926,31 +1919,29 @@ impl SimpleFS {
 
 
     fn link_syn(
-        &mut self,
-        req: &Request,
-        inode: u64,
-        new_parent: u64,
-        new_name: &OsStr,) -> ReplyEntryResult {
-            debug!(
-                "link() called for {}, {}, {:?}",
-                inode, new_parent, new_name
-            );
-            let mut attrs = match self.get_inode(inode) {
-                Ok(attrs) => attrs,
-                Err(error_code) => {
-                    reply.error(error_code);
-                    return;
-                }
-            };
-            if let Err(error_code) = self.insert_link(req, new_parent, new_name, inode, attrs.kind) {
-                reply.error(error_code);
-            } else {
-                attrs.hardlinks += 1;
-                attrs.last_metadata_changed = time_now();
-                self.write_inode(&attrs);
-                reply.entry(&Duration::new(0, 0), &attrs.into(), 0);
-            }
+      &mut self,
+      req: &Request,
+      inode: u64,
+      new_parent: u64,
+      new_name: &OsStr,) -> ReplyEntryResult {
 
+        debug!(
+            "link() called for {}, {}, {:?}",
+            inode, new_parent, new_name
+        );
+        let mut ie = self.get_inode(inode)?;
+
+        self.insert_link(req, new_parent, new_name, inode, ie.attrs.kind)?;
+        
+        ie.attrs.hardlinks += 1;
+        ie.attrs.last_metadata_changed = time_now();
+        self.repository.write_inode(inode, &ie)?;
+        
+        Ok(ReplyEntryOk {
+            ttl: Duration::new(0, 0),
+            attrs: ie.attrs.into(),
+            generation: 0
+        })
     }
 
     fn open_syn(&mut self, req: &Request, inode: u64, flags: i32) -> ReplyOpenResult {
@@ -1959,8 +1950,7 @@ impl SimpleFS {
             libc::O_RDONLY => {
                 // Behavior is undefined, but most filesystems return EACCES
                 if flags & libc::O_TRUNC != 0 {
-                    reply.error(libc::EACCES);
-                    return;
+                    return Err(libc::EACCES);
                 }
                 if flags & FMODE_EXEC != 0 {
                     // Open is from internal exec syscall
@@ -1973,33 +1963,21 @@ impl SimpleFS {
             libc::O_RDWR => (libc::R_OK | libc::W_OK, true, true),
             // Exactly one access mode flag must be specified
             _ => {
-                reply.error(libc::EINVAL);
-                return;
+                return Err(libc::EINVAL);
             }
         };
 
-        match self.get_inode(inode) {
-            Ok(mut ic) => {
-                let attr = ic.attrs;
-                if check_access(
-                    attr.uid,
-                    attr.gid,
-                    attr.mode,
-                    req.uid(),
-                    req.gid(),
-                    access_mask,
-                ) {
-                    let fh = self.allocate_next_file_handle(inode, read, write);
-                    // todo
-                    let open_flags = if self.direct_io { FOPEN_DIRECT_IO } else { 0 };
-                    reply.opened(fh, open_flags);
-                } else {
-                    reply.error(libc::EACCES);
-                }
-                return;
-            },
-            Err(err_code) => reply.error(err_code),
-        }
+        let ic = self.get_inode(inode)?;
+
+        check_access_rq(&ic.attrs, req, access_mask)?;
+
+        let fh = self.allocate_next_file_handle(inode, read, write);
+        let open_flags = if self.options.direct_io { FOPEN_DIRECT_IO } else { 0 };
+    
+        Ok(ReplyOpenOk {
+            fh,
+            flags: open_flags
+        })
     }
 
     fn read_syn(
@@ -2017,22 +1995,17 @@ impl SimpleFS {
             );
             assert!(offset >= 0);
             if !self.check_file_handle_read(fh) {
-                reply.error(libc::EACCES);
-                return;
+                return Err(libc::EACCES);
             }
-    
-            let path = self.content_path(inode);
-            if let Ok(file) = File::open(path) {
-                let file_size = file.metadata().unwrap().len();
-                // Could underflow if file length is less than local_start
-                let read_size = min(size, file_size.saturating_sub(offset as u64) as u32);
-    
-                let mut buffer = vec![0; read_size as usize];
-                file.read_exact_at(&mut buffer, offset as u64).unwrap();
-                reply.data(&buffer);
-            } else {
-                reply.error(libc::ENOENT);
-            }
+
+            let ie = self.get_inode(inode)?;
+            let file_content = Self::assume_file(&ie)?;
+
+            if ie.attrs.size <= offset { return Err(libc::EOF); }
+            let read_size = min(size, file_size - offset);
+            let buffer = self.repository.read_buffer(file_content, offset, read_size);
+
+            Ok(ReplyDataOk { buffer })
 
     }
 }
@@ -2075,14 +2048,15 @@ pub fn check_access(
     return access_mask == 0;
 }
 
-pub fn check_access_rq(attrs: &InodeAttributes, req: &Request) -> Result<(), c_int> {
+#[must_use]
+pub fn check_access_rq(attrs: &InodeAttributes, req: &Request, access_mask: i32) -> Result<(), c_int> {
     if !check_access(
         attrs.uid,
         attrs.gid,
         attrs.mode,
         req.uid(),
         req.gid(),
-        libc::W_OK,
+        access_mask,
     ) {
         Err(libc::EACCES)
     } else {
