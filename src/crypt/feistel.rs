@@ -79,16 +79,16 @@ where
     U: PrimInt + WrappingAdd + BitXor<Output = U> + Copy,
 {
     /// Create a new Feistel network with the specified number of rounds and keys
-    pub fn new(num_rounds: usize, keys: Vec<U>) -> Result<Self, &'static str> {
+    pub fn new(num_rounds: usize, keys: Vec<U>) -> Self {
         if keys.len() != num_rounds {
-            return Err("Number of keys must match number of rounds");
+            panic!("Number of keys must match number of rounds");
         }
         
-        Ok(FeistelNetwork {
+        FeistelNetwork {
             num_rounds,
             keys,
             _phantom: std::marker::PhantomData,
-        })
+        }
     }
 
     /// The round function - in practice, this should be more complex
