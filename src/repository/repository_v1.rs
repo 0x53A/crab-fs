@@ -28,6 +28,8 @@ use rand::{RngCore, SeedableRng};
 //-------------------
 
 use blake3::Hasher;
+
+use crate::errors::{MyResult, ErrorKinds};
 // use bincode_maxsize_derive::BincodeMaxSize;
 
 
@@ -143,31 +145,25 @@ pub struct BlockChunk {
 }
 
 // note: the way bincode works, 'len' in this struct maps to the length of the vector 'data' in the serialized representation of BlockChunk
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone, Copy)]
 pub struct BlockChunkHeader {
     pub id: ChunkId,
-    pub len: usize,
+    pub len: u64,
 }
 
 impl BlockChunkHeader {
     const SIZE : usize = 24;
-
-    #[cfg(test)]
-    #[test]
-    pub fn test_size_of() {
-        let header = BlockChunkHeader {
-            id: [0; 16],
-            len: 0,
-        };
-        assert_eq!(bincode::serialize(&header).unwrap().len(), SIZE);
-    }
 }
 
 impl BlockChunk {
     const OFFSET_OF_ACTUAL_DATA : usize = BlockChunkHeader::SIZE;
+}
 
-    
-    #[cfg(test)]
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
     #[test]
     pub fn test_offset_of_data() {
         let chunk = BlockChunk {
@@ -178,6 +174,15 @@ impl BlockChunk {
         assert_eq!(serialized.len(), BlockChunkHeader::SIZE + 2);
         assert_eq!(serialized[BlockChunk::OFFSET_OF_ACTUAL_DATA], 0x53);
         assert_eq!(serialized[BlockChunk::OFFSET_OF_ACTUAL_DATA + 1], 0xa0);
+    }
+
+    #[test]
+    pub fn test_size_of() {
+        let header = BlockChunkHeader {
+            id: [0; 16],
+            len: 0,
+        };
+        assert_eq!(bincode::serialize(&header).unwrap().len(), BlockChunkHeader::SIZE);
     }
 }
 
@@ -217,10 +222,10 @@ impl BlockChunk {
 //     const OFFSET_OF_ACTUAL_DATA : usize = OFFSET_OF_DATA_FIELD + SIZE_OF_DATA_LENGTH;
 // }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone, Copy)]
 pub struct Range {
-    pub offset: usize,
-    pub len: usize
+    pub offset: u64,
+    pub len: u64
 }
 
 // /// Example:
@@ -287,29 +292,30 @@ pub struct Range {
 //     }
 // }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone, Copy)]
 pub struct BlockChunkRef {
     /// the hash of the data chunk
     pub id: ChunkId,
     /// note: this len MUST match exactly with the length of the chunk that is referenced.
     /// It is duplicated here so we don't need to actually open the chunk to find out the length.
-    pub len: usize,    
+    pub len: u64,    
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone, Copy)]
 pub struct WindowedChunkRef {
     pub base: BlockChunkRef,
     pub range: Range,
 }
 
+#[derive(Serialize, Deserialize, Clone, Copy)]
 pub struct InProgressBlockChunkRef {
     pub block_id: ChunkId,
-    pub len: usize,
+    pub len: u64,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub enum ChunkRef {
-    Zero(usize),
+    Zero(u64),
     Inline(Vec<u8>),
     Block(BlockChunkRef),
     Window(WindowedChunkRef),
@@ -317,10 +323,10 @@ pub enum ChunkRef {
 }
 
 impl ChunkRef {
-    pub fn len(&self) -> usize {
+    pub fn len(&self) -> u64 {
         match self {
             ChunkRef::Zero(size) => *size,
-            ChunkRef::Inline(data) => data.len(),
+            ChunkRef::Inline(data) => data.len() as u64,
             ChunkRef::Block(block_ref) => block_ref.len,
             ChunkRef::Window(windowed_ref) => windowed_ref.range.len,
             ChunkRef::InProgressBlock(in_progress_ref) => in_progress_ref.len,
@@ -328,7 +334,7 @@ impl ChunkRef {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub enum FileContent {
     Chunks(Vec<ChunkRef>),
     // note: an empty file would be represented as "Chunks([])"
@@ -343,7 +349,7 @@ impl FileContent {
         chunks
     }
 
-    pub fn len(&self) -> usize {
+    pub fn len(&self) -> u64 {
         self.chunks().iter()
             .map(|chunk| chunk.len())
             .sum()
@@ -373,28 +379,7 @@ pub struct InodeEntry {
 
 // ------------------------
 
-pub enum RepositoryError {
-    IOError(io::Error),
-    DeserializationError(bincode::ErrorKind)
-}
 
-impl From<io::Error> for RepositoryError {
-    fn from(error: io::Error) -> Self {
-        RepositoryError::IOError(error)
-    }
-}
-
-impl From<bincode::ErrorKind> for RepositoryError {
-    fn from(error: bincode::ErrorKind) -> Self {
-        RepositoryError::DeserializationError(error)
-    }
-}
-
-impl From<Box<bincode::ErrorKind>> for RepositoryError {
-    fn from(error: Box<bincode::ErrorKind>) -> Self {
-        RepositoryError::DeserializationError(*error)
-    }
-}
 
 pub struct BlockChunkWriter {
     file: File
@@ -405,42 +390,42 @@ impl BlockChunkWriter {
         Self { file }
     }
 
-    pub fn read_header(&mut self) -> Result<BlockChunkHeader, RepositoryError> {
+    pub fn read_header(&mut self) -> Result<BlockChunkHeader, ErrorKinds> {
         let mut buffer = [0u8;BlockChunkHeader::SIZE];
         self.file.seek(SeekFrom::Start(0))?;
-        self.file.read_exact(&buffer)?;
+        self.file.read_exact(&mut buffer)?;
         let header: BlockChunkHeader = bincode::deserialize(&buffer)?;
 
         // if debug?
         {
             let file_size = self.file.metadata()?.len();
             let header_size = header.len;
-            assert_eq!(file_size as usize, header_size + BlockChunk::OFFSET_OF_ACTUAL_DATA);
+            assert_eq!(file_size, header_size + BlockChunk::OFFSET_OF_ACTUAL_DATA as u64);
         }
 
         return Ok(header);
     }
 
-    pub fn read_data(&mut self, offset: usize, buffer: &mut [u8]) -> Result<(), io::Error> {
-        self.file.seek(SeekFrom::Start((BlockChunk::OFFSET_OF_ACTUAL_DATA + offset) as u64))?;
+    pub fn read_data(&mut self, offset: u64, buffer: &mut [u8]) -> MyResult<()> {
+        self.file.seek(SeekFrom::Start(BlockChunk::OFFSET_OF_ACTUAL_DATA as u64 + offset))?;
         self.file.read_exact(buffer)?;
         Ok(())
     }
 
-    pub fn write_header(&mut self, header: &BlockChunkHeader) -> Result<(), RepositoryError> {
+    pub fn write_header(&mut self, header: &BlockChunkHeader) -> Result<(), ErrorKinds> {
         let serialized = bincode::serialize(header)?;
         self.file.seek(SeekFrom::Start(0))?;
         self.file.write_all(&serialized)?;
         Ok(())
     }
 
-    pub fn write_data(&mut self, offset: usize, buffer: &[u8]) -> Result<(), io::Error> {
-        self.file.seek(SeekFrom::Start((BlockChunk::OFFSET_OF_ACTUAL_DATA + offset) as u64))?;
+    pub fn write_data(&mut self, offset: u64, buffer: &[u8]) -> MyResult<()> {
+        self.file.seek(SeekFrom::Start(BlockChunk::OFFSET_OF_ACTUAL_DATA as u64 + offset))?;
         self.file.write_all(buffer)?;
         Ok(())
     }
 
-    pub fn calculate_hash(&mut self) -> io::Result<ChunkId> {
+    pub fn calculate_hash(&mut self) -> MyResult<ChunkId> {
         let hash: ChunkId = todo!();
 
         Ok(hash)
@@ -448,9 +433,9 @@ impl BlockChunkWriter {
 
     /// resize the file. this does not update the header!
     /// Call write_header afterwards!
-    pub fn resize_data(&mut self, new_len: usize) -> io::Result<()> {
-        let new_total_len = BlockChunkHeader::SIZE + new_len;
-        self.file.set_len(new_total_len as u64)?;
+    pub fn resize_data(&mut self, new_len: u64) -> MyResult<()> {
+        let new_total_len = BlockChunkHeader::SIZE as u64 + new_len;
+        self.file.set_len(new_total_len)?;
         Ok(())
     }
 }
@@ -468,7 +453,8 @@ impl FilesystemWriter {
         }
     }
 
-    pub fn init(&self) -> io::Result<()> {
+    /// idempotent, can be called multiple times
+    pub fn init(&self) -> MyResult<()> {
         fs::create_dir_all(Path::new(&self.data_dir).join("meta"))?;
         fs::create_dir_all(Path::new(&self.data_dir).join("inodes"))?;
         fs::create_dir_all(Path::new(&self.data_dir).join("contents"))?;
@@ -479,40 +465,39 @@ impl FilesystemWriter {
         Ok(())
     }
 
+    /// can be destructive!
+    pub fn create_new_fs(&self) -> Result<(), ErrorKinds> {
+        let path = self.get_meta_path(Self::META_NEXT_INODE);
+        let tmp_path = path.with_added_extension(".tmp");
+        let writer = self.create(&tmp_path)?;
+        bincode::serialize_into(writer, &(1))?;
+        fs::rename(tmp_path, path)?;
+        Ok(())
+    }
+
     // --------------------------------------------------------------
 
     fn hash_to_pathsegment(id: &ChunkId) -> PathBuf {
         PathBuf::from(format!("{:x?}", id))
     }
 
-    #[cfg(test)]
-    #[test]
-    pub fn test_hash_to_pathsegment() {
-        let testcases = vec![
-            ([0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f], "0010102030405060708090a0b0c0d0e0f")
-        ];
-
-        for tc in testcases {
-            let (input, expected) = tc;
-            let actual = Self::hash_to_pathsegment(&input);
-            assert_eq!(actual, expected);
-        }
+    fn open_read<P: AsRef<Path>>(&self, path: P) -> MyResult<File> {
+        let file = OpenOptions::new().read(true).open(path.as_ref())?;
+        return Ok(file);
     }
 
-    fn open_read<P: AsRef<Path>>(&self, path: P) -> io::Result<File> {
-        OpenOptions::new().read(true).open(path.as_ref())
+    fn open_write<P: AsRef<Path>>(&self, path: P) -> MyResult<File> {
+        let file = OpenOptions::new().write(true).open(path.as_ref())?;
+        return Ok(file);
     }
 
-    fn open_write<P: AsRef<Path>>(&self, path: P) -> io::Result<File> {
-        OpenOptions::new().write(true).open(path.as_ref())
-    }
-
-    fn create<P: AsRef<Path>>(&self, path: P) -> io::Result<File> {
-        OpenOptions::new()
+    fn create<P: AsRef<Path>>(&self, path: P) -> MyResult<File> {
+        let file = OpenOptions::new()
             .write(true)
             .create(true)
             .truncate(true)
-            .open(path.as_ref())
+            .open(path.as_ref())?;
+        return Ok(file);
     }
 
     fn inode_path(&self, inode: Inode) -> PathBuf {
@@ -524,13 +509,13 @@ impl FilesystemWriter {
 
     // --------------------------------------------------------------
 
-    pub fn get_inode(&self, inode: Inode) -> io::Result<InodeEntry> {
+    pub fn get_inode(&self, inode: Inode) -> MyResult<InodeEntry> {
         let path = self.inode_path(inode);
         let file = self.open_read(path)?;
         Ok(bincode::deserialize_from(file).unwrap())
     }
 
-    pub fn write_inode(&self, ino: Inode, content: &InodeEntry) -> io::Result<()>  {
+    pub fn write_inode(&self, ino: Inode, content: &InodeEntry) -> MyResult<()>  {
         assert!(ino == content.attrs.inode);
         let path = self.inode_path(ino);
         let file = self.open_write(path)?;
@@ -552,13 +537,13 @@ impl FilesystemWriter {
     // Blocks
     // ----------------------
 
-    pub fn read_block(&self, is_in_progress:bool, cref: &BlockChunkRef) -> io::Result<BlockChunkWriter> {
+    pub fn read_block(&self, is_in_progress:bool, cref: &BlockChunkRef) -> MyResult<BlockChunkWriter> {
         let path = self.block_path(is_in_progress, cref);
         let file = self.open_read(path)?;
         Ok(BlockChunkWriter::new(file))
     }
 
-    pub fn write_block(&self, is_in_progress: bool, cref: &BlockChunkRef) -> io::Result<BlockChunkWriter> {        
+    pub fn write_block(&self, is_in_progress: bool, cref: &BlockChunkRef) -> MyResult<BlockChunkWriter> {        
         let path = self.block_path(is_in_progress, cref);
         let file = self.open_write(path)?;
         Ok(BlockChunkWriter::new(file))
@@ -583,24 +568,14 @@ impl FilesystemWriter {
 
     const META_NEXT_INODE : &str = "next_inode";
 
-    pub fn meta_get_next_inode(&self) -> Result<Inode, RepositoryError> {
+    pub fn meta_get_next_inode(&self) -> Result<Inode, ErrorKinds> {
 
         let path = self.get_meta_path(Self::META_NEXT_INODE);
 
-        let current_inode: Inode =
-            match self.open_read(&path) {
-                Ok(file) => bincode::deserialize_from(file)?,
-                Err(err) => {
-                    match err.kind() {
-                        ErrorKind::NotFound => 1,
-                        // note: if the file becomes corrupt, no more inodes can be allocated, so no new files or directories can be created.
-                        //       at the very least, an expressive error message should be bubbled up to the user, and a "repair" command be added to the cli
-                        //       which would just scan the whole filesystem and reset it to the highest found value
-                        _ => return Err(err.into())
-                    }
-                }
-            };
-
+        // note: if the file becomes corrupt, no more inodes can be allocated, so no new files or directories can be created.
+        //       at the very least, an expressive error message should be bubbled up to the user, and a "repair" command be added to the cli
+        //       which would just scan the whole filesystem and reset it to the highest found value
+        let current_inode: Inode = bincode::deserialize_from(self.open_read(&path)?)?;
 
         // do an atomic replace of the file
         let tmp_path = path.with_added_extension(".tmp");
@@ -613,6 +588,23 @@ impl FilesystemWriter {
 
 }
 
+
+#[cfg(test)]
+mod FilesystemWriter_tests {
+    use super::*;
+    #[test]
+    pub fn test_hash_to_pathsegment() {
+        let testcases = vec![
+            ([0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f], "0010102030405060708090a0b0c0d0e0f")
+        ];
+
+        for tc in testcases {
+            let (input, expected) = tc;
+            let actual = FilesystemWriter::hash_to_pathsegment(&input);
+            assert_eq!(actual.to_str().unwrap(), expected);
+        }
+    }
+}
 
 // ------------------------
 
@@ -634,22 +626,30 @@ impl RepositoryV1 {
         }
     }
 
+    /// idempotent, can be called multiple times
     pub fn init(&self) {
         self.writer.init();
     }
 
+    /// can be destructive!
+    pub fn create_new_fs(&self) {
+        self.writer.create_new_fs();
 
-    pub fn get_inode(&self, ino: Inode) -> io::Result<InodeEntry> {
+    }
+
+
+    pub fn get_inode(&self, ino: Inode) -> MyResult<InodeEntry> {
         self.writer.get_inode(ino)
     }
 
-    pub fn write_inode(&self, ino: Inode, content: &InodeEntry) -> io::Result<()>  {
+    pub fn write_inode(&self, ino: Inode, content: &InodeEntry) -> MyResult<()>  {
         self.writer.write_inode(ino, content)
     }
 
-    fn truncate_chunk(&self, chunk: &ChunkRef, truncated_size: u64) -> Result<ChunkRef, RepositoryError> {
+    fn truncate_chunk(&self, chunk: &ChunkRef, truncated_size: u64) -> Result<ChunkRef, ErrorKinds> {
+
         if truncated_size == chunk.len() {
-            return Ok(*chunk);
+            return Ok(chunk.clone());
         }
         assert!(truncated_size < chunk.len());
 
@@ -658,7 +658,7 @@ impl RepositoryV1 {
                 return Ok(ChunkRef::Zero(truncated_size));
             },
             ChunkRef::Inline(data) => {
-                return Ok(ChunkRef::Inline(data[..truncated_size].to_vec()));
+                return Ok(ChunkRef::Inline(data[..truncated_size as usize].to_vec()));
             },
             ChunkRef::Block(block_chunk_ref) => {
                 return Ok(ChunkRef::Window(WindowedChunkRef { base: *block_chunk_ref, range: Range { offset: 0, len: truncated_size } }));
@@ -679,9 +679,9 @@ impl RepositoryV1 {
         }
     }
 
-    pub fn change_content_len(&self, old_content: FileContent, new_length: u64) -> Result<FileContent, RepositoryError> {
+    pub fn change_content_len(&self, old_content: &FileContent, new_length: u64) -> Result<FileContent, ErrorKinds> {
         if new_length == old_content.len() {
-            return Ok(old_content);
+            return Ok(old_content.clone());
         } else if new_length == 0 {
             return Ok(FileContent::Chunks(vec![]));
         } else if new_length > old_content.len() {
@@ -721,21 +721,19 @@ impl RepositoryV1 {
         }
     }
 
-    pub fn allocate_next_inode(&self) -> io::Result<Inode> {
+    pub fn allocate_next_inode(&self) -> Result<Inode, ErrorKinds> {
         self.writer.meta_get_next_inode()
     }
 
-    pub fn read(&self, fc: &FileContent, offset: u64, buffer: &[u8]) -> io::Result<()> {
+    pub fn read(&self, fc: &FileContent, offset: u64, buffer: &[u8]) -> MyResult<()> {
         todo!()
     }
 
-    pub fn write(&self, fc: &FileContent, offset: u64, buffer: &[u8]) -> io::Result<FileContent> {
+    pub fn write(&self, fc: &FileContent, offset: u64, buffer: &[u8]) -> MyResult<FileContent> {
         todo!()
     }
 
-    pub fn copy_range(&self, from: &FileContent, to: &FileContent,         src_offset: i64,
-        dest_offset: i64,
-        size: u64) -> Result<FileContent, RepositoryError> {
+    pub fn copy_range(&self, from: &FileContent, to: &FileContent, src_offset: i64, dest_offset: i64, size: u64) -> Result<FileContent, ErrorKinds> {
             todo!()
         }
 }

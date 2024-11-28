@@ -6,10 +6,15 @@
 #![allow(clippy::needless_return)]
 #![allow(clippy::unnecessary_cast)] // libc::S_* are u16 or u32 depending on the platform
 
+#![feature(path_add_extension)]
+#![feature(let_chains)]
+
+
 pub mod crypt;
 pub mod entropy;
 pub mod repository;
 pub mod cuttlefish;
+mod errors;
 
 use cuttlefish::{SimpleFS, SimpleFsOptions};
 

@@ -244,6 +244,8 @@ struct FileHandleEntry {
 }
 
 pub struct SimpleFsOptions {
+    /// DANGEROUS
+    pub create_fs_automatically_if_not_exist: bool,
     pub permutate_handle_values: bool,
     pub direct_io: bool,
     #[cfg(feature = "abi-7-26")]
@@ -253,6 +255,7 @@ pub struct SimpleFsOptions {
 impl SimpleFsOptions {
     pub fn default() -> Self {
         Self {
+            create_fs_automatically_if_not_exist: false,
             permutate_handle_values: true,
             direct_io: false,
             #[cfg(feature = "abi-7-26")]
@@ -391,22 +394,22 @@ impl SimpleFS {
 
     fn truncate(
         &self,
-        ie: &InodeEntry,
+        ie: &mut InodeEntry,
         new_length: u64,
         uid: u32,
         gid: u32,
-    ) -> Result<(), c_int> {
+    ) -> Result<(), crate::errors::ErrorKinds> {
         if new_length > MAX_FILE_SIZE {
-            return Err(libc::EFBIG);
+            Err(libc::EFBIG)?;
         }
-        let mut attrs = &ie.attrs;
+        let mut attrs = &mut ie.attrs;
 
         if !check_access(attrs.uid, attrs.gid, attrs.mode, uid, gid, libc::W_OK) {
-            return Err(libc::EACCES);
+            Err(libc::EACCES)?;
         }
 
-        let InodeContent::File(file_content) = ie.content else {
-             return Err(libc::EISDIR);
+        let InodeContent::File(file_content) = &ie.content else {
+             Err(libc::EISDIR)?
         };
 
         let new_content = self.repository.change_content_len(file_content, new_length)?;
@@ -418,46 +421,59 @@ impl SimpleFS {
         // Clear SETUID & SETGID on truncate
         clear_suid_sgid(&mut attrs);
 
-        assert!(&ie.attrs == &attrs);
         ie.content = InodeContent::File(new_content);
         self.repository.write_inode(ie.attrs.inode, &ie);
 
         Ok(())
     }
 
-    fn try_find_directory_entry(parent: &DirectoryDescriptor,  name: &OsStr) -> Option<(Inode, FileKind)> {
+    fn try_find_directory_entry<'a>(parent: &'a DirectoryDescriptor,  name: &OsStr) -> Option<&'a (Inode, FileKind)> {
         parent.get(name.as_bytes())
     }
 
-    fn lookup_name(&self, parent: u64, name: &OsStr) -> Result<InodeAttributes, c_int> {
-        let entries = self.get_directory_content(parent)?;
-        if let Some((inode, _)) = entries.get(name.as_bytes()) {
-            return self.get_inode(*inode);
-        } else {
-            return Err(libc::ENOENT);
-        }
-    }
-
     #[must_use]
-    fn assume_directory<'a>(ie: &'a InodeEntry) -> Result<&'a DirectoryDescriptor, c_int> {
-        match &ie.content {
+    fn assume_directory<'a>(content: &'a InodeContent) -> Result<&'a DirectoryDescriptor, c_int> {
+        match content {
             InodeContent::File(_) | InodeContent::Symlink(_) => {
                 return Err(libc::ENOTDIR);
             },
             InodeContent::Directory(dir_content) => {
-                dir_content
+                return Ok(dir_content);
             }
         };
     }
 
     #[must_use]
-    fn assume_file<'a>(ie: &'a InodeEntry) -> Result<&'a FileContent, c_int> {
-        match &ie.content {
+    fn assume_file<'a>(content: &'a InodeContent) -> Result<&'a FileContent, c_int> {
+        match content {
             InodeContent::Directory(_) | InodeContent::Symlink(_) => {
                 return Err(libc::EISDIR);
             },
             InodeContent::File(file_content) => {
-                file_content
+                return Ok(file_content);
+            }
+        };
+    }
+    #[must_use]
+    fn assume_directory_mut<'a>(content: &'a mut InodeContent) -> Result<&'a mut DirectoryDescriptor, c_int> {
+        match content {
+            InodeContent::File(_) | InodeContent::Symlink(_) => {
+                return Err(libc::ENOTDIR);
+            },
+            InodeContent::Directory(dir_content) => {
+                return Ok(dir_content);
+            }
+        };
+    }
+
+    #[must_use]
+    fn assume_file_mut<'a>(content: &'a mut InodeContent) -> Result<&'a mut FileContent, c_int> {
+        match content {
+            InodeContent::Directory(_) | InodeContent::Symlink(_) => {
+                return Err(libc::EISDIR);
+            },
+            InodeContent::File(file_content) => {
+                return Ok(file_content);
             }
         };
     }
@@ -480,12 +496,12 @@ impl SimpleFS {
         kind: FileKind,
     ) -> Result<(), c_int> {
         let mut parent_node = self.get_inode(parent)?;
+        let parent_attrs = &mut parent_node.attrs;
 
-        let mut dir_content = Self::assume_directory(&parent_node)?;
+        let mut dir_content: &mut BTreeMap<Vec<u8>, (u64, FileKind)> = Self::assume_directory_mut(&mut parent_node.content)?;
 
         Self::require_not_exist(dir_content, name)?;
 
-        let mut parent_attrs = &parent_node.attrs;
 
         check_access_rq(parent_attrs, req, libc::W_OK)?;
 
@@ -494,7 +510,6 @@ impl SimpleFS {
         parent_attrs.last_metadata_changed = time_now();
 
         dir_content.insert(name.as_bytes().to_vec(), (inode, kind));
-        assert!(parent_node.content == InodeContent::Directory(dir_content));
 
         self.repository.write_inode(inode, &parent_node);
 
@@ -503,6 +518,47 @@ impl SimpleFS {
 }
 
 
+impl SimpleFS {
+    pub fn create_fs(&mut self) -> Result<(), c_int> {
+        self.repository.init();
+
+        let existing_root_node = self.get_inode(FUSE_ROOT_ID);
+        
+        match existing_root_node {
+            Ok(_) => {
+                // fs already exists
+                return Err(libc::EEXIST);
+            },
+            Err(libc::ENOENT) => {
+                // file not found - great! let's create the repository
+
+                // Initialize with empty filesystem
+                let root_attr = InodeAttributes {
+                    inode: FUSE_ROOT_ID,
+                    // open_file_handles: 0,
+                    size: 0,
+                    last_accessed: time_now(),
+                    last_modified: time_now(),
+                    last_metadata_changed: time_now(),
+                    kind: FileKind::Directory,
+                    mode: 0o777, // ???
+                    hardlinks: 2, // todo ???
+                    uid: 0,
+                    gid: 0,
+                    xattrs: Default::default(),
+                };
+                let mut entries = BTreeMap::new();
+                entries.insert(b".".to_vec(), (FUSE_ROOT_ID, FileKind::Directory));
+                // todo: what about ".." ?
+                let root_node = InodeEntry {attrs: root_attr, content: InodeContent::Directory(entries) };
+                self.repository.write_inode(FUSE_ROOT_ID, &root_node);
+                return Ok(())
+            },
+            Err(e) => return Err(e)
+        };
+
+    }
+}
 
 //
 // -------------------------------------------------------------------------------------------------------------
@@ -518,28 +574,17 @@ impl Filesystem for SimpleFS {
 
         self.repository.init();
 
-        if self.get_inode(FUSE_ROOT_ID).is_err() {
-            // Initialize with empty filesystem
-            let root_attr = InodeAttributes {
-                inode: FUSE_ROOT_ID,
-                // open_file_handles: 0,
-                size: 0,
-                last_accessed: time_now(),
-                last_modified: time_now(),
-                last_metadata_changed: time_now(),
-                kind: FileKind::Directory,
-                mode: 0o777, // ???
-                hardlinks: 2, // todo ???
-                uid: 0,
-                gid: 0,
-                xattrs: Default::default(),
-            };
-            let mut entries = BTreeMap::new();
-            entries.insert(b".".to_vec(), (FUSE_ROOT_ID, FileKind::Directory));
-            // todo: what about ".." ?
-            let root_node = InodeEntry {attrs: root_attr, content: entries};
-            self.repository.write_inode(FUSE_ROOT_ID, &root_node);
+        let existing_root_node = self.get_inode(FUSE_ROOT_ID);
+
+        if let Err(e) = existing_root_node {
+            
+            if e == libc::ENOENT && self.options.create_fs_automatically_if_not_exist {
+                self.create_fs()?;
+            } else {
+                return Err(e);
+            }
         }
+
         Ok(())
     }
 
@@ -985,47 +1030,11 @@ impl Filesystem for SimpleFS {
 // ------------------------------------------------------------------------------------------
 // impl Syn
 
-struct AsCError {
-    c_int: c_int,
-}
-
-impl Deref for AsCError {
-    type Target = c_int;
-
-    fn deref(&self) -> &Self::Target {
-        &self.c_int
-    }
-}
-
-impl From<i32> for AsCError {
-    fn from(c_int: i32) -> Self {
-        AsCError { c_int }
-    }
-}
-
-impl From<io::Error> for AsCError {
-    fn from(io_error: io::Error) -> Self {
-        AsCError { c_int: io_error.raw_os_error().unwrap_or(libc::EIO) }
-    }
-}
-
-impl From<RepositoryError> for AsCError {
-    fn from(repo_error: RepositoryError) -> Self {
-        AsCError { c_int: match repo_error {
-            RepositoryError::IOError(io_error) => io_error.raw_os_error().unwrap_or(libc::EIO),
-            RepositoryError::DeserializationError(des_error) => match des_error {
-                bincode::ErrorKind::Io(io_error) => {
-                    io_error.raw_os_error().unwrap_or(libc::EIO)
-                },
-                _ => libc::EIO
-            }
-        } }
-    }
-}
 
 
 
-type ReplyResult<T> = Result<T, AsCError>;
+
+type ReplyResult<T> = Result<T, ErrorKinds>;
 
 struct ReplyEntryOk {
     ttl: Duration,
@@ -1870,8 +1879,8 @@ fn setattr_syn(
 
             if ie.attrs.size <= offset { return Err(libc::EOF.into()); }
             let read_size: usize = min(size as usize, ie.attrs.size - offset);
-            let buffer = [u8; read_size];
-            self.repository.read(file_content, offset, &buffer)?;
+            let mut buffer = vec![0u8; read_size];
+            self.repository.read(file_content, offset, &mut buffer)?;
 
             Ok(ReplyDataOk { buffer })
 
