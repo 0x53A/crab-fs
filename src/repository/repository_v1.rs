@@ -486,6 +486,7 @@ impl BlockChunkWriter {
         Ok(())
     }
 
+    /// calculates the hash of the content
     pub fn calculate_hash(&mut self) -> MyResult<ChunkId> {
         let hash: ChunkId = todo!();
 
@@ -591,12 +592,12 @@ impl FilesystemWriter {
 
     // --------------------------------------------------------------
 
-    fn block_path(&self, is_in_progress:bool, cref: &BlockChunkRef) -> PathBuf {
+    fn block_path(&self, is_in_progress:bool, id: &ChunkId) -> PathBuf {
         let subdir = if is_in_progress { "" } else { "" };
         let path = Path::new(&self.data_dir)
             .join("contents")
             .join(subdir)
-            .join(Self::hash_to_pathsegment(&cref.id));
+            .join(Self::hash_to_pathsegment(id));
         return path;
     }
 
@@ -604,17 +605,24 @@ impl FilesystemWriter {
     // ----------------------
 
     pub fn read_block(&self, is_in_progress:bool, cref: &BlockChunkRef) -> MyResult<BlockChunkWriter> {
-        let path = self.block_path(is_in_progress, cref);
+        let path = self.block_path(is_in_progress, &cref.id);
         let file = self.open_read(path)?;
         Ok(BlockChunkWriter::new(file))
     }
 
     pub fn write_block(&self, is_in_progress: bool, cref: &BlockChunkRef) -> MyResult<BlockChunkWriter> {        
-        let path = self.block_path(is_in_progress, cref);
+        let path = self.block_path(is_in_progress, &cref.id);
         let file = self.open_write(path)?;
         Ok(BlockChunkWriter::new(file))
     }
     
+    pub fn create_in_progress_block(&self) -> MyResult<BlockChunkWriter> {
+        let uuid : ChunkId = todo!();
+        let path = self.block_path(true, &uuid);
+        let file = self.create(path)?;
+        let writer = BlockChunkWriter::new(file);
+        Ok(writer)
+    }
 
     // --------------------------------------------------------------
 
@@ -640,7 +648,7 @@ impl FilesystemWriter {
 
         // note: if the file becomes corrupt, no more inodes can be allocated, so no new files or directories can be created.
         //       at the very least, an expressive error message should be bubbled up to the user, and a "repair" command be added to the cli
-        //       which would just scan the whole filesystem and reset it to the highest found value
+        //       which would just scan the whole filesystem and reset it to the highest found value.
         let current_inode: Inode = bincode::deserialize_from(self.open_read(&path)?)?;
 
         // do an atomic replace of the file
@@ -920,7 +928,7 @@ impl RepositoryV1 {
                         writer.write_data(keep_at_beginning, buffer_slice)?;
                         
                         new_chunks.push(ChunkRef::InProgressBlock(BlockChunkRef {
-                            block_id: block_ref.block_id,
+                            id: block_ref.block_id,
                             len: new_size,
                         }));
                         current_offset = write_end_excl; // Important: update this so we don't add another chunk
@@ -931,122 +939,50 @@ impl RepositoryV1 {
                         new_chunks.push(chunk.clone());
                         current_offset = chunk_end_excl;
                     }
-                },pub fn write(&self, fc: &FileContent, offset: u64, buffer: &[u8]) -> MyResult<FileContent> {
-    let FileContent::Chunks(chunks) = fc;
-    let mut new_chunks = Vec::new();
-    let mut current_offset = 0u64;
-    let write_end_excl = offset + buffer.len() as u64;
-    
-    // Handle all chunks
-    for chunk in chunks {
-        let chunk_begin = current_offset;
-        let chunk_len = chunk.len();
-        let chunk_end_excl = current_offset + chunk_len;
+                },
 
-        if chunk_end_excl <= offset {
-            // This chunk is entirely before the write range
-            new_chunks.push(chunk.clone());
-            current_offset = chunk_end_excl;
-            continue;
-        }
+                // For other types, convert to InProgressBlock if write is large enough
+                _ => {
 
-        if chunk_begin >= write_end_excl {
-            // This chunk is entirely after the write range
-            new_chunks.push(chunk.clone());
-            current_offset = chunk_end_excl;
-            continue;
-        }
 
-        // Calculate overlap
-        let keep_at_beginning = if offset > chunk_begin { offset - chunk_begin } else { 0 };
-        let keep_at_tail = if write_end_excl < chunk_end_excl { chunk_end_excl - write_end_excl } else { 0 };
-        let write_offset_in_buffer = if chunk_begin > offset { chunk_begin - offset } else { 0 };
-        let size_to_write = chunk_len - keep_at_beginning - keep_at_tail;
-        
-        match chunk {
-            ChunkRef::InProgressBlock(block_ref) => {
-                let mut writer = self.write_block(true, block_ref)?;
-                
-                // If this is the last chunk and write extends beyond it, extend the block
-                if current_offset + chunk_len == fc.len() && write_end_excl > chunk_end_excl {
-                    let new_size = keep_at_beginning + (write_end_excl - chunk_begin);
-                    writer.resize_data(new_size)?;
-                    writer.write_header(&BlockChunkHeader { 
-                        id: block_ref.block_id, 
-                        len: new_size 
-                    })?;
-                    
-                    // Write the data, including the extension
-                    let buffer_slice = &buffer[write_offset_in_buffer as usize..];
-                    writer.write_data(keep_at_beginning, buffer_slice)?;
-                    
-                    new_chunks.push(ChunkRef::InProgressBlock(BlockChunkRef {
-                        block_id: block_ref.block_id,
-                        len: new_size,
-                    }));
-                    current_offset = write_end_excl; // Important: update this so we don't add another chunk
-                } else {
-                    // Normal case - just write into existing block
-                    let buffer_slice = &buffer[write_offset_in_buffer as usize..][..size_to_write as usize];
-                    writer.write_data(keep_at_beginning, buffer_slice)?;
-                    new_chunks.push(chunk.clone());
-                    current_offset = chunk_end_excl;
-                }
-            },
-            // For other types, convert to InProgressBlock if write is large enough
-            _ => {
-                if size_to_write > 1024 { // threshold for creating new block
-                    // Create new InProgressBlock
-                    let new_block_id = generate_random_block_id(); // need to implement this
-                    let mut writer = self.create_in_progress_block(new_block_id, chunk_len)?;
-                    
-                    // Copy existing data if needed
-                    if keep_at_beginning > 0 {
-                        // TODO: copy beginning from old chunk
-                    }
-                    
-                    // Write new data
-                    let buffer_slice = &buffer[write_offset_in_buffer as usize..][..size_to_write as usize];
-                    writer.write_data(keep_at_beginning, buffer_slice)?;
-                    
-                    if keep_at_tail > 0 {
-                        // TODO: copy tail from old chunk
-                    }
-                    
-                    new_chunks.push(ChunkRef::InProgressBlock(BlockChunkRef {
-                        block_id: new_block_id,
-                        len: chunk_len,
-                    }));
-                } else {
-                    // For small writes, just create an Inline chunk
-                    if keep_at_beginning > 0 {
-                        // TODO: keep beginning of old chunk
-                    }
-                    
-                    // Add new inline data
-                    let buffer_slice = &buffer[write_offset_in_buffer as usize..][..size_to_write as usize];
-                    new_chunks.push(ChunkRef::Inline(buffer_slice.to_vec()));
-                    
-                    if keep_at_tail > 0 {
-                        // TODO: keep tail of old chunk
+                    if size_to_write > 1024 { // threshold for creating new block
+                        // Create new InProgressBlock
+                        let mut writer = self.writer.create_in_progress_block()?;
+                        
+                        // Copy existing data if needed
+                        if keep_at_beginning > 0 {
+                            // TODO: copy beginning from old chunk
+                        }
+                        
+                        // Write new data
+                        let buffer_slice = &buffer[write_offset_in_buffer as usize..][..size_to_write as usize];
+                        writer.write_data(keep_at_beginning, buffer_slice)?;
+                        
+                        if keep_at_tail > 0 {
+                            // TODO: copy tail from old chunk
+                        }
+                        
+                        new_chunks.push(ChunkRef::InProgressBlock(BlockChunkRef {
+                            id: new_block_id,
+                            len: chunk_len,
+                        }));
+                    } else {
+                        // For small writes, just create an Inline chunk
+                        if keep_at_beginning > 0 {
+                            // TODO: keep beginning of old chunk
+                        }
+                        
+                        // Add new inline data
+                        let buffer_slice = &buffer[write_offset_in_buffer as usize..][..size_to_write as usize];
+                        new_chunks.push(ChunkRef::Inline(buffer_slice.to_vec()));
+                        
+                        if keep_at_tail > 0 {
+                            // TODO: keep tail of old chunk
+                        }
                     }
                 }
-            }
-        }
-        
-        current_offset = chunk_end_excl;
-    }
-    
-    // Handle write extending past end of file
-    // Only do this if we haven't already handled it by extending an InProgressBlock
-    if current_offset < write_end_excl {
-        let remaining = write_end_excl - current_offset;
-        let buffer_offset = buffer.len() - remaining as usize;
-        new_chunks.push(ChunkRef::Inline(buffer[buffer_offset..].to_vec()));
-    }
-    
-    Ok(FileContent::Chunks(new_chunks))
-}
+
+
             }
             
             current_offset = chunk_end_excl;
@@ -1062,6 +998,8 @@ impl RepositoryV1 {
         
         Ok(FileContent::Chunks(new_chunks))
     }
+
+
 
     pub fn copy_range(&self, from: &FileContent, to: &FileContent, src_offset: u64, dest_offset: u64, size: u64) -> Result<FileContent, ErrorKinds> {
         todo!()
