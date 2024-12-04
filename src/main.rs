@@ -85,49 +85,48 @@ fn main() {
 
     let gen_key_cmd = Command::new("gen-key");
 
+    // Common Args
+
+    let arg_key = Arg::new("encryption-key")
+        .long("encryption-key")
+        .short('k')
+        .value_name("KEY")
+        .help("The key used to en-/decrypt the repository");
+
+    let arg_dir = Arg::new("data-dir")
+        .long("data-dir")
+        .short('d')
+        .value_name("DIR")
+        .help("Set local directory used to store data");
+
+
+    // CMDs
+
+    let init_cmd = Command::new("init")
+        .arg(arg_key.clone())
+        .arg(arg_dir.clone());
+
+    let mount_cmd = Command::new("mount")
+    .arg(arg_key)
+    .arg(arg_dir)
+    .arg(
+        Arg::new("direct-io")
+            .long("direct-io")
+            .action(ArgAction::SetTrue)
+            .requires("mount-point")
+            .help("Mount FUSE with direct IO"),
+    )
+    .arg(
+        Arg::new("suid")
+            .long("suid")
+            .action(ArgAction::SetTrue)
+            .help("Enable setuid support when run as root"),
+    );
+
+    
     let matches = Command::new("Crab-FS")
         .version(crate_version!())
         .author("Lukas Rieger")
-        .arg(
-            Arg::new("encryption-key")
-                .long("encryption-key")
-                .short('k')
-                .value_name("KEY")
-                .help("The key used to en-/decrypt the repository"),
-        )
-        .arg(
-            Arg::new("data-dir")
-                .long("data-dir")
-                .short('d')
-                .value_name("DIR")
-                .help("Set local directory used to store data"),
-        )
-        .arg(
-            Arg::new("mount-point")
-                .long("mount-point")
-                .short('m')
-                .value_name("MOUNT_POINT")
-                .help("Act as a client, and mount FUSE at given path"),
-        )
-        .arg(
-            Arg::new("direct-io")
-                .long("direct-io")
-                .action(ArgAction::SetTrue)
-                .requires("mount-point")
-                .help("Mount FUSE with direct IO"),
-        )
-        .arg(
-            Arg::new("fsck")
-                .long("fsck")
-                .action(ArgAction::SetTrue)
-                .help("Run a filesystem check"),
-        )
-        .arg(
-            Arg::new("suid")
-                .long("suid")
-                .action(ArgAction::SetTrue)
-                .help("Enable setuid support when run as root"),
-        )
         .arg(
             Arg::new("v")
                 .short('v')
@@ -135,6 +134,8 @@ fn main() {
                 .help("Sets the level of verbosity"),
         )
         .subcommand(gen_key_cmd)
+        .subcommand(init_cmd)
+        .subcommand(mount_cmd)
         .get_matches();
 
     if matches.subcommand_matches("gen-key").is_some() {

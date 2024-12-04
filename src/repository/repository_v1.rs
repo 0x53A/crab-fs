@@ -525,6 +525,17 @@ impl BlockChunkWriter {
         zero_file_range(&self.file, BlockChunk::OFFSET_OF_ACTUAL_DATA as u64 + offset, size)?;
         Ok(())
     }
+
+    pub fn copy_data(&self, source: &BlockChunkWriter, src_offset: u64, dst_offset: u64, size: u64) -> MyResult<()> {
+        copy_file_range(
+            &source.file,
+            BlockChunk::OFFSET_OF_ACTUAL_DATA as u64 + src_offset,
+            &self.file,
+            BlockChunk::OFFSET_OF_ACTUAL_DATA as u64 + dst_offset,
+            size
+        )?;
+        Ok(())
+    }
 }
 
 // ------------------------
@@ -621,7 +632,7 @@ impl FilesystemWriter {
     // --------------------------------------------------------------
 
     fn block_path(&self, is_in_progress:bool, id: &ChunkId) -> PathBuf {
-        let subdir = if is_in_progress { "" } else { "" };
+        let subdir = if is_in_progress { "in-progress" } else { "blocks" };
         let path = Path::new(&self.data_dir)
             .join("contents")
             .join(subdir)
@@ -712,7 +723,7 @@ mod FilesystemWriter_tests {
 // ------------------------
 
 pub struct RepositoryOptions {
-    pub max_inline_content_size: usize,
+    pub max_inline_content_size: u64,
 
 }
 
@@ -772,9 +783,9 @@ impl RepositoryV1 {
                 let mut block_writer = self.writer.write_block(true, &in_progress_block_ref.id)?;
                 let mut block_header = block_writer.read_header()?;
                 assert_eq!(block_header.id, in_progress_block_ref.id);
-                block_writer.resize_data(truncated_size);
+                block_writer.resize_data(truncated_size)?;
                 block_header.len = truncated_size;
-                block_writer.write_header(&block_header);
+                block_writer.write_header(&block_header)?;
 
                 return Ok(ChunkRef::InProgressBlock(in_progress_block_ref));
             },
@@ -948,7 +959,7 @@ impl RepositoryV1 {
     
             // For other types, convert to InProgressBlock if write is large enough
             _ => {
-                if size_to_write > 1024 { // threshold for creating new block
+                if size_to_write > self.options.max_inline_content_size { // threshold for creating new block
                     // Create new InProgressBlock
                     let (uuid, mut block_writer) = self.writer.create_in_progress_block()?;
                     let total_size = std::cmp::max(chunk_len, write_end_excl);
@@ -1067,7 +1078,7 @@ impl RepositoryV1 {
 
                 // For other types, convert to InProgressBlock if write is large enough
                 other_chunk => {
-                    if size_to_write > 1024 { // threshold for creating new block
+                    if size_to_write > self.options.max_inline_content_size {
                         // Create new InProgressBlock
                         let (uuid, mut block_writer) = self.writer.create_in_progress_block()?;
                         let total_size = keep_at_beginning + size_to_write + keep_at_tail;
@@ -1138,123 +1149,288 @@ impl RepositoryV1 {
         Ok(FileContent::Chunks(new_chunks))
     }
 
+    /// finds which chunk is at the specified offset, returns (chunk, offset_within_chunk)
+    fn find_chunk_at_offset<'a>(&self, chunks: &'a Vec<ChunkRef>, offset: u64) -> Option<(&'a ChunkRef, u64)> {
+        let mut current_offset = 0u64;
+        
+        for chunk in chunks {
+            let chunk_begin = current_offset;
+            let chunk_len = chunk.len();
+            let chunk_end_excl = current_offset + chunk_len;
+            
+            if chunk_begin <= offset && offset < chunk_end_excl {
+                // Found the chunk containing our offset
+                // Calculate the relative offset within this chunk
+                let chunk_relative_offset = offset - chunk_begin;
+                return Some((chunk, chunk_relative_offset));
+            }
+            
+            current_offset = chunk_end_excl;
+        }
+        
+        // Offset is beyond the end of all chunks
+        None
+    }
 
+    /// copy data between chunks. The data to be copied can exceed the size of the destination chunk, in that case it will be extended.
+    pub fn copy_range_in_chunks(&mut self, from: &ChunkRef, to: &ChunkRef, src_offset: u64, dest_offset: u64, size: u64) -> MyResult<Vec<ChunkRef>> {
+        // Validate source range is inside source chunk
+        if src_offset + size > from.len() {
+            return Err(ErrorKinds::C_Int(libc::EINVAL));
+        }
 
-    pub fn copy_range(&self, from: &FileContent, to: &FileContent, src_offset: u64, dest_offset: u64, size: u64) -> Result<FileContent, ErrorKinds> {
+        // validate there's no 'hole' in dest chunk
+        if dest_offset > to.len() {
+            return Err(ErrorKinds::C_Int(libc::EINVAL));
+        }
+    
+        match to {    
+            // When copying to an InProgressBlock, we can potentially do efficient copies
+            ChunkRef::InProgressBlock(dst_block) => {
+                match from {
+                    // Efficient block-to-block copy
+                    ChunkRef::Block(BlockChunkRef {id: src_block_id, len: src_block_len}) 
+                        | ChunkRef::InProgressBlock(InProgressBlockChunkRef {id: src_block_id, len: src_block_len}) => {
+                        let src_writer = self.writer.read_block(matches!(from, ChunkRef::InProgressBlock(_)), &src_block_id)?;
+                        let dst_writer = self.writer.write_block(true, &dst_block.id)?;
+                        dst_writer.copy_data(&src_writer, src_offset, dest_offset, size)?;
+                        return Ok(vec![ChunkRef::InProgressBlock(dst_block.clone())]);
+                    },
+    
+                    // Window source - read from the underlying block
+                    ChunkRef::Window(window) => {
+                        let actual_src_offset = window.range.offset + src_offset;
+                        let src_writer = self.writer.read_block(false, &window.base.id)?;
+                        let dst_writer = self.writer.write_block(true, &dst_block.id)?;
+                        dst_writer.copy_data(&src_writer, actual_src_offset, dest_offset, size)?;
+                        return Ok(vec![ChunkRef::InProgressBlock(dst_block.clone())]);
+                    },
+    
+                    // For inline sources, just write the data
+                    ChunkRef::Inline(data) => {
+                        let mut dst_writer = self.writer.write_block(true, &dst_block.id)?;
+                        dst_writer.write_data(dest_offset, &data[src_offset as usize..(src_offset + size) as usize])?;
+                        return Ok(vec![ChunkRef::InProgressBlock(dst_block.clone())]);
+                    },
+    
+                    ChunkRef::Zero(_) => {
+                        let dst_writer = self.writer.write_block(true, &dst_block.id)?;
+                        dst_writer.write_data_zero_range(dest_offset, size)?;
+                        return Ok(vec![ChunkRef::InProgressBlock(dst_block.clone())]);
+                    }
+                }
+            },
+    
+            // destination is not an InProgressBlock
+            _ => {
+                let mut buffer = vec![0u8; size as usize];
+                self.read_from_chunk(from, src_offset, &mut buffer)?;
+
+                let new_chunks = self.write_to_chunk(to, dest_offset, &buffer)?;
+                return Ok(new_chunks);
+            }
+        }
+    }
+
+    /// creates a cheap subchunk if that is possible to do without writing to a file (that is, if the src is Zero, Block, Window, or Inline)
+    fn try_create_cheap_subchunk(&mut self, src: &ChunkRef, offset: u64, size: u64) -> Option<ChunkRef> {
+        // Validate source range is inside source chunk
+        assert!(offset + size <= src.len());
+
+        match src {
+            ChunkRef::Zero(_) => Some(ChunkRef::Zero(size)),
+            ChunkRef::Inline(data) => Some(ChunkRef::Inline(data[offset as usize..][..size as usize].to_vec())),
+            ChunkRef::Block(block_chunk_ref) => Some(ChunkRef::Window(
+                WindowedChunkRef {
+                    base: block_chunk_ref.clone(),
+                    range: Range {
+                        offset,
+                        len: size
+                    }
+                }
+            )),            
+            ChunkRef::Window(windowed_chunk_ref) => Some(ChunkRef::Window(
+                WindowedChunkRef {
+                    base: windowed_chunk_ref.base.clone(),
+                    range: Range {
+                        offset: windowed_chunk_ref.range.offset + offset,
+                        len: size
+                    }
+                }
+            )),
+            ChunkRef::InProgressBlock(_) => None,
+        }
+    }
+
+    /// copies a range from a source file to a destination file. The destination file may grow as a result of the operation.
+    pub fn copy_range(&mut self, from: &FileContent, to: &FileContent, src_offset: u64, dest_offset: u64, size: u64) -> MyResult<FileContent> {
+        // Validate source range is inside source chunk
+        if src_offset + size > from.len() {
+            return Err(ErrorKinds::C_Int(libc::EINVAL));
+        }
+
+        // validate there's no 'hole' in dest chunk
+        if dest_offset > to.len() {
+            return Err(ErrorKinds::C_Int(libc::EINVAL));
+        }
+
         let FileContent::Chunks(from_chunks) = from;
         let FileContent::Chunks(to_chunks) = to;
         
         let mut new_chunks = Vec::new();
-        let mut src_pos = 0u64;
-        let mut dst_pos = 0u64;
-        let mut src_remaining = size;
-        let src_end = src_offset + size;
-        let dst_end = dest_offset + size;
+        let mut current_dest_pos = 0;
 
-        // Copy over chunks before the destination offset
+        let src_read_range_end_excl = src_offset + size;
+        let dest_write_range_end_excl = dest_offset + size;
+    
+        // Copy over full chunks before the destination offset
         for chunk in to_chunks {
             let chunk_len = chunk.len();
-            if dst_pos + chunk_len <= dest_offset {
+
+            if current_dest_pos + chunk_len <= dest_offset {
                 new_chunks.push(chunk.clone());
-                dst_pos += chunk_len;
+                current_dest_pos += chunk_len;
                 continue;
             }
-            break;
         }
 
-        // Process chunks that overlap with the copy range
-        while src_remaining > 0 && dst_pos < dst_end {
-            // Find current source chunk
-            let mut src_chunk = None;
-            let mut src_chunk_start = 0u64;
-            for chunk in from_chunks {
-                let chunk_len = chunk.len();
-                if src_chunk_start + chunk_len > src_pos {
-                    src_chunk = Some(chunk);
-                    break;
-                }
-                src_chunk_start += chunk_len;
-            }
-
-            // Find current destination chunk
-            let mut dst_chunk = None;
-            let mut dst_chunk_start = dst_pos;
-            for chunk in to_chunks {
-                let chunk_len = chunk.len();
-                if dst_chunk_start + chunk_len > dst_pos {
-                    dst_chunk = Some(chunk);
-                    break;
-                }
-                dst_chunk_start += chunk_len;
-            }
-
-            match (src_chunk, dst_chunk) {
-                (Some(src_chunk), Some(ChunkRef::InProgressBlock(dst_block))) => {
-                    // Try efficient copy if source is a Block or InProgressBlock
-                    match src_chunk {
-                        ChunkRef::Block(BlockChunkRef {id:src_block_id, len: src_block_len}) | ChunkRef::InProgressBlock(InProgressBlockChunkRef {id:src_block_id, len: src_block_len}) => {
-                            let src_writer = self.writer.read_block(matches!(src_chunk, ChunkRef::InProgressBlock(_)), src_block_id)?;
-                            let dst_writer = self.writer.write_block(true, &dst_block.id)?;
-                            
-                            let src_chunk_offset = src_offset - src_chunk_start;
-                            let dst_chunk_offset = dest_offset - dst_chunk_start;
-                            let copy_size = std::cmp::min(
-                                src_remaining,
-                                std::cmp::min(
-                                    src_block_len - src_chunk_offset,
-                                    dst_block.len - dst_chunk_offset
-                                )
-                            );
-
-                            copy_file_range(
-                                &src_writer.file,
-                                BlockChunk::OFFSET_OF_ACTUAL_DATA as u64 + src_chunk_offset,
-                                &dst_writer.file,
-                                BlockChunk::OFFSET_OF_ACTUAL_DATA as u64 + dst_chunk_offset,
-                                copy_size
-                            )?;
-
-                            new_chunks.push(ChunkRef::InProgressBlock(dst_block.clone()));
-                            src_remaining -= copy_size;
-                            src_pos += copy_size;
-                            dst_pos += copy_size;
-                        },
-                        _ => {
-                            // Fallback to read+write for other source chunk types
-                            let mut buffer = vec![0u8; src_remaining as usize];
-                            self.read_from_chunk(src_chunk, src_offset - src_chunk_start, &mut buffer)?;
-                            let new_chunks = self.write_to_chunk(dst_chunk, dest_offset - dst_chunk_start, &buffer)?;
-                            for c in new_chunks {
-                                new_chunks.push(c);
-                            }
-                            src_remaining = 0;
-                            break;
-                        }
-                    }
-                },
-                (Some(_), Some(_)) => {
-                    // Neither chunk is an InProgressBlock, fallback to buffer copy
-                    let mut buffer = vec![0u8; src_remaining as usize];
-                    self.read(from, src_offset, &mut buffer)?;
-                    let new_content = self.write(to, dest_offset, &buffer)?;
-                    return Ok(new_content);
-                },
-                _ => break, // Ran out of source or destination chunks
-            }
+        if let Some((dest_chunk, dest_chunk_offset)) = self.find_chunk_at_offset(to_chunks, dest_offset) {
+            let truncated_size = dest_chunk_offset - current_dest_pos;
+            let truncated = self.truncate_chunk(dest_chunk.clone(), truncated_size)?;
+            current_dest_pos += truncated_size;
+            new_chunks.push(truncated);
         }
 
-        // Copy remaining chunks after the copy range
+        // copy the specified range from src
+        let mut written = 0;
+        let new_in_progress_chunk = self.writer.create_in_progress_block()?;
+        let (uuid, mut writer) = new_in_progress_chunk;
+        while written < size {
+            let (src_chunk, src_chunk_offset) = self.find_chunk_at_offset(from_chunks, src_offset + written).unwrap();
+            let to_copy = std::cmp::min(src_chunk.len() - src_chunk_offset, size - written);
+            let mut buffer = vec![0u8; to_copy as usize];
+            self.read_from_chunk(src_chunk, src_chunk_offset, &mut buffer)?;
+            writer.write_data(written, &buffer)?;
+            written += to_copy;
+        }
+        writer.write_header(&BlockChunkHeader { id: uuid, len: written })?;
+        new_chunks.push(ChunkRef::InProgressBlock(InProgressBlockChunkRef{id: uuid, len: written}));
+        current_dest_pos += written;
+
+
+        // copy partial 'dest' block after the written range
+        if let Some((dest_chunk, dest_chunk_offset)) = self.find_chunk_at_offset(to_chunks, current_dest_pos) {
+            if dest_chunk_offset > 0 {
+                let to_copy = dest_chunk.len() - dest_chunk_offset;
+                
+                if let Some(new_subchunk) = self.try_create_cheap_subchunk(dest_chunk, dest_chunk_offset, to_copy) {
+                    new_chunks.push(new_subchunk);
+                    current_dest_pos += to_copy;
+                } else {
+                    let new_in_progress_chunk = self.writer.create_in_progress_block()?;
+                    let (uuid, mut writer) = new_in_progress_chunk;
+                    let mut buffer = vec![0u8; to_copy as usize];
+                    self.read_from_chunk(dest_chunk, dest_chunk_offset, &mut buffer)?;
+                    writer.write_data(0, &buffer)?;
+                    writer.write_header(&BlockChunkHeader { id: uuid, len: to_copy })?;
+                    new_chunks.push(ChunkRef::InProgressBlock(InProgressBlockChunkRef{id: uuid, len: to_copy}));
+                    current_dest_pos += to_copy;
+                }
+            }
+        }
+    
+        // Copy over full chunks after the destination offset + copy range
+        let mut pos = 0;
         for chunk in to_chunks {
-            let chunk_len = chunk.len();
-            if dst_pos >= dst_end {
+            if pos >= current_dest_pos {
                 new_chunks.push(chunk.clone());
+                current_dest_pos += chunk.len();
             }
-            dst_pos += chunk_len;
+            pos += chunk.len();
         }
 
 
+        let mut new_file = FileContent::Chunks(new_chunks);
+        new_file = self.optimize_file(&new_file)?;
+        Ok(new_file)
+    }
 
-        Ok(FileContent::Chunks(new_chunks))
+    pub fn zero_range_in_chunk(&self, chunk: &ChunkRef, offset: u64, size: u64) -> MyResult<Vec<ChunkRef>> {
+        let chunk_len = chunk.len();
+        let mut result = Vec::new();
+        
+        // If the range starts at 0 and covers the whole chunk, just return a Zero chunk
+        if offset == 0 && size >= chunk_len {
+            return Ok(vec![ChunkRef::Zero(chunk_len)]);
+        }
+    
+        let keep_at_beginning = offset;
+        let range_end_excl = std::cmp::min(offset + size, chunk_len);
+        let keep_at_tail = chunk_len - range_end_excl;
+        let size_of_overlapping_zero_range = range_end_excl - offset;
+    
+        match chunk {
+            ChunkRef::Zero(_) => {
+                // zero overlapping zero is zero
+                result.push(ChunkRef::Zero(chunk_len));
+            },
+            ChunkRef::Inline(data) => {
+                if keep_at_beginning > 0 {
+                    result.push(ChunkRef::Inline(data[..keep_at_beginning as usize].to_vec()));
+                }
+                result.push(ChunkRef::Zero(size_of_overlapping_zero_range));
+                if keep_at_tail > 0 {
+                    result.push(ChunkRef::Inline(data[(chunk_len - keep_at_tail) as usize ..].to_vec()));
+                }
+            },
+            ChunkRef::Block(block_ref) => {
+                if keep_at_beginning > 0 {
+                    result.push(ChunkRef::Window(WindowedChunkRef{base: block_ref.clone(), range: Range { offset: 0, len: keep_at_beginning }}));
+                }
+                result.push(ChunkRef::Zero(size_of_overlapping_zero_range));
+                if keep_at_tail > 0 {
+                    result.push(ChunkRef::Window(WindowedChunkRef{base: block_ref.clone(), range: Range { offset: chunk_len - keep_at_tail, len: keep_at_tail }}));
+                }
+            },
+            ChunkRef::Window(windowed_ref) => {
+                if keep_at_beginning > 0 {
+                    result.push(ChunkRef::Window(WindowedChunkRef{
+                        base: windowed_ref.base.clone(),
+                        range: Range {
+                            offset: windowed_ref.range.offset,
+                            len: keep_at_beginning
+                        }
+                    }));
+                }
+                result.push(ChunkRef::Zero(size_of_overlapping_zero_range));
+                if keep_at_tail > 0 {
+                    result.push(ChunkRef::Window(WindowedChunkRef{
+                        base: windowed_ref.base.clone(),
+                        range: Range {
+                            offset: windowed_ref.range.offset + (chunk_len - keep_at_tail),
+                            len: keep_at_tail
+                        }
+                    }));
+                }
+            },
+            ChunkRef::InProgressBlock(block_ref) => {
+                let mut block_writer = self.writer.write_block(true, &block_ref.id)?;
+                // if the range-to-be-zeroed extends over the end of the block ..
+                if keep_at_tail == 0 {
+                    // keep the beginning of the chunk, and just trim off the end
+                    block_writer.resize_data(keep_at_beginning)?;
+                    block_writer.write_header(&BlockChunkHeader { id: block_ref.id, len: keep_at_beginning })?;
+                    result.push(ChunkRef::InProgressBlock(InProgressBlockChunkRef { id: block_ref.id, len: keep_at_beginning }));
+                    result.push(ChunkRef::Zero(size_of_overlapping_zero_range));
+                } else {
+                    // write the zero-range directly into the block
+                    block_writer.write_data_zero_range(keep_at_beginning, size_of_overlapping_zero_range)?;
+                    result.push(ChunkRef::InProgressBlock(block_ref.clone()));
+                }
+            }
+        }
+        
+        Ok(result)
     }
 
     pub fn zero_range(&self, file: &FileContent, offset: u64, size: u64) -> Result<FileContent, ErrorKinds> {
@@ -1322,79 +1498,9 @@ impl RepositoryV1 {
             // how much of the zero-range overlaps with this chunk
             let size_of_overlapping_zero_range = std::cmp::min(range_end_excl, chunk_end_excl) - std::cmp::max(offset, chunk_begin);
 
-            match chunk {
-                ChunkRef::Zero(_) => {
-                    // zero overlapping zero is zero
-                    new_chunks.push(ChunkRef::Zero(chunk_len));
-                    current_offset += chunk_len;
-                },
-                ChunkRef::Inline(data) => {
-                    if keep_at_beginning > 0 {
-                        new_chunks.push(ChunkRef::Inline(data[..keep_at_beginning as usize].to_vec()));
-                    }
+            let zeroed_chunk = self.zero_range_in_chunk(chunk, keep_at_beginning, size_of_overlapping_zero_range)?;
+            new_chunks.extend(zeroed_chunk);
 
-                    new_chunks.push(ChunkRef::Zero(size_of_overlapping_zero_range));
-
-                    if keep_at_tail > 0 {
-                        new_chunks.push(ChunkRef::Inline(data[(chunk_len - keep_at_tail) as usize ..].to_vec()));
-                    }
-                    current_offset += chunk_len;
-                },
-                ChunkRef::Block(block_ref) => {
-
-                    if keep_at_beginning > 0 {
-                        new_chunks.push(ChunkRef::Window(WindowedChunkRef{base: block_ref.clone(), range: Range { offset: 0, len: keep_at_beginning }}));
-                    }
-
-                    new_chunks.push(ChunkRef::Zero(size_of_overlapping_zero_range));
-
-                    if keep_at_tail > 0 {
-                        new_chunks.push(ChunkRef::Window(WindowedChunkRef{base: block_ref.clone(), range: Range { offset: chunk_len - keep_at_tail, len: keep_at_tail }}));
-                    }
-                    current_offset += chunk_len;
-                },
-                ChunkRef::Window(windowed_ref) => {
-                    if keep_at_beginning > 0 {
-                        new_chunks.push(ChunkRef::Window(WindowedChunkRef{
-                            base: windowed_ref.base.clone(),
-                            range: Range { 
-                                offset: windowed_ref.range.offset,
-                                len: keep_at_beginning
-                            }
-                        }));
-                    }
-
-                    new_chunks.push(ChunkRef::Zero(size_of_overlapping_zero_range));
-
-                    if keep_at_tail > 0 {
-                        new_chunks.push(ChunkRef::Window(WindowedChunkRef{
-                            base: windowed_ref.base.clone(),
-                            range: Range { 
-                                offset: windowed_ref.range.offset + (chunk_len - keep_at_tail),
-                                len: keep_at_tail
-                            }
-                        }));
-                    }
-                    current_offset += chunk_len;
-                },
-                ChunkRef::InProgressBlock(block_ref) => {
-                    let mut block_writer = self.writer.write_block(true, &block_ref.id)?;
-                    // if the range-to-be-zeroed extends over the end of the block ..
-                    if keep_at_tail == 0 {
-                        // keep the beginning of the chunk, and just trim off the end
-                        block_writer.resize_data(keep_at_beginning)?;
-                        block_writer.write_header(&BlockChunkHeader { id: block_ref.id, len: keep_at_beginning })?;
-                        new_chunks.push(ChunkRef::InProgressBlock(InProgressBlockChunkRef { id: block_ref.id, len: keep_at_beginning }));
-                        new_chunks.push(ChunkRef::Zero(size_of_overlapping_zero_range));
-                        current_offset += chunk_len;
-                    } else {
-                        // write the zero-range directly into the block
-                        block_writer.write_data_zero_range(keep_at_beginning, size_of_overlapping_zero_range)?;
-                        new_chunks.push(ChunkRef::InProgressBlock(block_ref.clone()));
-                        current_offset += chunk_len;
-                    }
-                }
-            }
         }
 
         // If the zero range extends beyond the end of the file, add a final zero chunk
@@ -1402,10 +1508,12 @@ impl RepositoryV1 {
             new_chunks.push(ChunkRef::Zero(range_end_excl - current_offset));
         }
 
-        Ok(FileContent::Chunks(new_chunks))
+        let mut fc = FileContent::Chunks(new_chunks);
+        fc = self.optimize_file(&fc)?;
+        Ok(fc)
     }
 
-    /// merge adjacent Zero ranges, merge adjacent Inline chunks
+    /// merge adjacent Zero ranges, merge adjacent Inline chunks, etc
     pub fn optimize_file(&self, file: &FileContent) -> MyResult<FileContent> {
         let FileContent::Chunks(chunks) = file;
         if chunks.is_empty() {
@@ -1424,9 +1532,29 @@ impl RepositoryV1 {
                 
                 // Merge adjacent Inline chunks
                 (Some(ChunkRef::Inline(current_data)), ChunkRef::Inline(additional_data)) => {
+                    let _new_size = current_data.len() + additional_data.len();
+                    // todo: if new_size >= threshold, export to InProgressBlock
                     let mut merged_data = current_data.clone();
                     merged_data.extend_from_slice(additional_data);
                     current_chunk = Some(ChunkRef::Inline(merged_data));
+                },
+
+                // Merge Inline chunks into an InProgress Chunk
+                (Some(ChunkRef::InProgressBlock(in_progress)), ChunkRef::Inline(inline)) => {
+                    let new_length = in_progress.len + inline.len() as u64;
+                    let mut in_progress_block_writer = self.writer.write_block(true, &in_progress.id)?;
+                    in_progress_block_writer.write_data(in_progress.len, inline)?;
+                    in_progress_block_writer.write_header(&BlockChunkHeader { id: in_progress.id, len: new_length })?;
+                    current_chunk = Some(ChunkRef::InProgressBlock(InProgressBlockChunkRef{id: in_progress.id, len: new_length}));
+                },
+
+                // Merge adjacent InProgress blocks
+                (Some(ChunkRef::InProgressBlock(in_progress)), ChunkRef::InProgressBlock(in_progress_2)) => {
+                    let new_length = in_progress.len + in_progress_2.len as u64;
+                    let mut in_progress_block_writer = self.writer.write_block(true, &in_progress.id)?;
+                    let reader = self.writer.read_block(true, &in_progress_2.id)?;
+                    in_progress_block_writer.copy_data(&reader, 0, in_progress.len, in_progress_2.len)?;
+                    in_progress_block_writer.write_header(&BlockChunkHeader { id: in_progress.id, len: new_length })?;
                 },
                 
                 // Handle transition to new chunk

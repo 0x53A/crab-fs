@@ -438,7 +438,7 @@ impl SimpleFS {
         // Clear SETUID & SETGID on truncate
         clear_suid_sgid(&mut attrs);
 
-        self.repository.write_inode(ie.attrs.inode, &ie);
+        self.repository.write_inode(ie.attrs.inode, &ie)?;
 
         Ok(())
     }
@@ -520,7 +520,7 @@ impl SimpleFS {
         let mut parent_node = self.repository.get_inode(parent)?;
         let parent_attrs = &mut parent_node.attrs;
 
-        let mut dir_content: &mut BTreeMap<Vec<u8>, (u64, FileKind)> = Self::assume_directory_mut(&mut parent_node.content)?;
+        let dir_content: &mut BTreeMap<Vec<u8>, (u64, FileKind)> = Self::assume_directory_mut(&mut parent_node.content)?;
 
         Self::require_not_exist(dir_content, name)?;
 
@@ -555,7 +555,7 @@ impl SimpleFS {
                 if *e == libc::ENOENT {
                     // file not found - great! let's create the repository
 
-                    self.repository.create_new_fs();
+                    self.repository.create_new_fs()?;
 
                     // Initialize with empty filesystem
                     let now = time_now();
@@ -677,7 +677,7 @@ impl Filesystem for SimpleFS {
         req: &Request,
         parent: u64,
         name: &OsStr,
-        mut mode: u32,
+        mode: u32,
         _umask: u32,
         _rdev: u32,
         reply: ReplyEntry,
@@ -697,7 +697,7 @@ impl Filesystem for SimpleFS {
         req: &Request,
         parent: u64,
         name: &OsStr,
-        mut mode: u32,
+        mode: u32,
         _umask: u32,
         reply: ReplyEntry,
     ) {
@@ -1260,7 +1260,7 @@ fn setattr_syn(
     }
 
     if let Some(atime) = atime {
-        let mut attrs = &mut ie.attrs;
+        let attrs = &mut ie.attrs;
         debug!("utimens() called with {:?}, atime={:?}", inode, atime);
 
         if attrs.uid != req.uid() && req.uid() != 0 && atime != Now {
@@ -1289,7 +1289,7 @@ fn setattr_syn(
     }
 
     if let Some(mtime) = mtime {
-        let mut attrs = &mut ie.attrs;
+        let attrs = &mut ie.attrs;
         debug!("utimens() called with {:?}, mtime={:?}", inode, mtime);
 
         if attrs.uid != req.uid() && req.uid() != 0 && mtime != Now {
@@ -1358,9 +1358,9 @@ fn setattr_syn(
         }
 
         let mut parent_ie = self.repository.get_inode(parent)?;
-        let mut parent_dir_content = Self::assume_directory_mut(&mut parent_ie.content)?;
+        let parent_dir_content = Self::assume_directory_mut(&mut parent_ie.content)?;
         Self::require_not_exist(parent_dir_content, name)?;
-        let mut parent_attrs = &mut parent_ie.attrs;
+        let parent_attrs = &mut parent_ie.attrs;
 
         if !check_access(
             parent_attrs.uid,
@@ -1412,13 +1412,13 @@ fn setattr_syn(
             };
 
         let ie = InodeEntry { attrs, content };
-        self.repository.write_inode(inode,&ie);
+        self.repository.write_inode(inode,&ie)?;
 
 
         parent_dir_content.insert(name.as_bytes().to_vec(), (inode, ie.attrs.kind));
         parent_attrs.last_modified = now;
         parent_attrs.last_metadata_changed = now;
-        self.repository.write_inode(parent, &parent_ie);
+        self.repository.write_inode(parent, &parent_ie)?;
 
         // TODO: implement flags
         Ok(ReplyEntryOk {
@@ -1441,9 +1441,9 @@ fn setattr_syn(
         debug!("mkdir() called with {:?} {:?} {:o}", parent, name, mode);
 
         let mut parent_node = self.repository.get_inode(parent)?;
-        let mut parent_dir_content = Self::assume_directory_mut(&mut parent_node.content)?;
+        let parent_dir_content = Self::assume_directory_mut(&mut parent_node.content)?;
         Self::require_not_exist(parent_dir_content, name)?;
-        let mut parent_attrs = &mut parent_node.attrs;
+        let parent_attrs = &mut parent_node.attrs;
         check_access_rq(&parent_attrs, req, libc::W_OK)?;
 
         if req.uid() != 0 {
@@ -1497,7 +1497,7 @@ fn setattr_syn(
         let mut parent_ie = self.repository.get_inode(parent)?;
         let parent_attrs = &mut parent_ie.attrs;
 
-        let mut parent_content = Self::assume_directory_mut(&mut parent_ie.content)?;
+        let parent_content = Self::assume_directory_mut(&mut parent_ie.content)?;
         let (inode, kind) = *Self::try_find_directory_entry(&parent_content, name).ok_or(libc::ENOENT)?;
         let mut ie = self.repository.get_inode(inode)?;
         let attrs = &mut ie.attrs;
@@ -1529,11 +1529,11 @@ fn setattr_syn(
         parent_attrs.last_metadata_changed = now;
         parent_attrs.last_modified = now;
         parent_content.remove(name.as_bytes());
-        self.repository.write_inode(parent, &parent_ie);
+        self.repository.write_inode(parent, &parent_ie)?;
 
         attrs.hardlinks -= 1;
         attrs.last_metadata_changed = now;
-        self.repository.write_inode(inode, &ie);
+        self.repository.write_inode(inode, &ie)?;
         self.gc_inode(&ie);
 
         Ok(())
@@ -1546,7 +1546,7 @@ fn setattr_syn(
     
         let mut parent_ie = self.repository.get_inode(parent)?;
         let parent_attrs = &mut parent_ie.attrs;
-        let mut parent_content = Self::assume_directory_mut(&mut parent_ie.content)?;
+        let parent_content = Self::assume_directory_mut(&mut parent_ie.content)?;
         
         let (inode, kind) = *Self::try_find_directory_entry(&parent_content, name).ok_or(libc::ENOENT)?;
         let mut ie = self.repository.get_inode(inode)?;
@@ -1611,7 +1611,7 @@ fn setattr_syn(
         let mut parent_node = self.repository.get_inode(parent)?;
 
         check_access_rq(&parent_node.attrs, req, libc::W_OK)?;
-        let mut dir_content = Self::assume_directory_mut(&mut parent_node.content)?;
+        let dir_content = Self::assume_directory_mut(&mut parent_node.content)?;
 
         Self::require_not_exist(dir_content, link_name)?;
 
@@ -2070,7 +2070,7 @@ fn setattr_syn(
             }
         };
 
-        let mut ic = self.repository.get_inode(inode)?;
+        let ic = self.repository.get_inode(inode)?;
         let dir_content = Self::assume_directory(&ic.content)?;
 
         if !check_access(
