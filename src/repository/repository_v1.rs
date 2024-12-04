@@ -437,13 +437,15 @@ impl BlockChunkWriter {
 // ------------------------
 
 pub struct FilesystemWriter {
-    data_dir: PathBuf
+    data_dir: PathBuf,
+    rng: rand::rngs::StdRng
 }
 
 impl FilesystemWriter {
     pub fn new(data_dir: PathBuf) -> Self {
         Self {
-            data_dir
+            data_dir,
+            rng: rand::rngs::StdRng::from_entropy()
         }
     }
 
@@ -501,6 +503,12 @@ impl FilesystemWriter {
         return path;
     }
 
+    fn get_uuid(&mut self) -> ChunkId {
+        let mut bytes = [0u8; SIZE_OF_CHUNK_ID];
+        self.rng.fill_bytes(&mut bytes);
+        bytes
+    }
+
     // --------------------------------------------------------------
 
     pub fn get_inode(&self, inode: Inode) -> MyResult<InodeEntry> {
@@ -543,12 +551,13 @@ impl FilesystemWriter {
         Ok(BlockChunkWriter::new(file))
     }
     
-    pub fn create_in_progress_block(&self) -> MyResult<BlockChunkWriter> {
-        let uuid : ChunkId = todo!();
+    /// note: the block is completely empty even without a header!
+    pub fn create_in_progress_block(&mut self) -> MyResult<(ChunkId, BlockChunkWriter)> {
+        let uuid : ChunkId = self.get_uuid();
         let path = self.block_path(true, &uuid);
         let file = self.create(path)?;
         let writer = BlockChunkWriter::new(file);
-        Ok(writer)
+        Ok((uuid, writer))
     }
 
     // --------------------------------------------------------------
@@ -623,7 +632,7 @@ impl RepositoryV1 {
     pub fn new(data_dir: PathBuf, options: RepositoryOptions) -> Self {
         Self {
             options,
-            writer: FilesystemWriter{data_dir}
+            writer: FilesystemWriter::new(data_dir)
         }
     }
 
@@ -726,14 +735,44 @@ impl RepositoryV1 {
         self.writer.meta_get_next_inode()
     }
 
+    pub fn read_from_chunk(&self, chunk: &ChunkRef, chunk_offset: u64, buffer: &mut [u8]) -> MyResult<()> {
+        match chunk {
+            ChunkRef::Zero(_) => {
+                // Fill with zeros
+                for i in 0..buffer.len() {
+                    buffer[i] = 0;
+                }
+            },
+            ChunkRef::Inline(data) => {
+                let start = chunk_offset as usize;
+                let end = start + buffer.len();
+                buffer.copy_from_slice(&data[start..end]);
+            },
+            ChunkRef::Block(block_ref) => {
+                let mut chunk_writer = self.writer.read_block(false, block_ref)?;
+                chunk_writer.read_data(chunk_offset, buffer)?;
+            },
+            ChunkRef::Window(windowed_ref) => {
+                let mut chunk_writer = self.writer.read_block(false, &windowed_ref.base)?;
+                let actual_offset = windowed_ref.range.offset + chunk_offset;
+                chunk_writer.read_data(actual_offset, buffer)?;
+            },
+            ChunkRef::InProgressBlock(block_ref) => {
+                let mut chunk_writer = self.writer.read_block(true, block_ref)?;
+                chunk_writer.read_data(chunk_offset, buffer)?;
+            }
+        }
+        Ok(())
+    }
+    
     pub fn read(&self, fc: &FileContent, offset: u64, buffer: &mut [u8]) -> MyResult<()> {
         let mut buffer_offset = 0;
         let mut file_offset = 0u64;
         let mut bytes_remaining = buffer.len();
-
+    
         // Get all chunks
         let FileContent::Chunks(chunks) = fc;
-
+    
         // Find the starting chunk and offset within that chunk
         for chunk in chunks {
             let chunk_len = chunk.len();
@@ -743,69 +782,47 @@ impl RepositoryV1 {
                 file_offset += chunk_len;
                 continue;
             }
-
+    
             // Calculate where to start reading in this chunk
             let chunk_offset = if file_offset < offset {
-                offset - file_offset 
+                offset - file_offset
             } else {
                 0
             };
-
+    
             // Calculate how many bytes we can read from this chunk
             let available_in_chunk = chunk_len - chunk_offset;
             let to_read = std::cmp::min(available_in_chunk, bytes_remaining as u64);
-
+    
             if to_read == 0 {
                 break;
             }
-
-            // Read the bytes based on chunk type
-            match chunk {
-                ChunkRef::Zero(_) => {
-                    // Fill with zeros
-                    for i in 0..to_read as usize {
-                        buffer[buffer_offset + i] = 0;
-                    }
-                },
-                ChunkRef::Inline(data) => {
-                    let start = chunk_offset as usize;
-                    let end = start + to_read as usize;
-                    buffer[buffer_offset..buffer_offset + to_read as usize]
-                        .copy_from_slice(&data[start..end]);
-                },
-                ChunkRef::Block(block_ref) => {
-                    let mut chunk_writer = self.writer.read_block(false, block_ref)?;
-                    chunk_writer.read_data(chunk_offset, &mut buffer[buffer_offset..buffer_offset + to_read as usize])?;
-                },
-                ChunkRef::Window(windowed_ref) => {
-                    let mut chunk_writer = self.writer.read_block(false, &windowed_ref.base)?;
-                    let actual_offset = windowed_ref.range.offset + chunk_offset;
-                    chunk_writer.read_data(actual_offset, &mut buffer[buffer_offset..buffer_offset + to_read as usize])?;
-                },
-                ChunkRef::InProgressBlock(block_ref) => {
-                    let mut chunk_writer = self.writer.read_block(true, block_ref)?;
-                    chunk_writer.read_data(chunk_offset, &mut buffer[buffer_offset..buffer_offset + to_read as usize])?;
-                }
-            }
-
+    
+            // Read the bytes from this chunk
+            self.read_from_chunk(chunk, chunk_offset, &mut buffer[buffer_offset..buffer_offset + to_read as usize])?;
+    
             buffer_offset += to_read as usize;
             bytes_remaining -= to_read as usize;
             file_offset += chunk_len;
-
+    
             if bytes_remaining == 0 {
                 break;
             }
         }
-
+    
         // If we couldn't read all requested bytes, return an error
         if bytes_remaining > 0 {
             return Err(libc::EINVAL.into());
         }
-
+    
         Ok(())
     }
 
-    pub fn write(&self, fc: &FileContent, offset: u64, buffer: &[u8]) -> MyResult<FileContent> {
+    pub fn write_to_chunk(&mut self, chunk: &ChunkRef, offset: u64, buffer: &[u8]) -> MyResult<ChunkRef> {
+        // todo
+    }
+
+    pub fn write(&mut self, fc: &FileContent, offset: u64, buffer: &[u8]) -> MyResult<FileContent> {
         let FileContent::Chunks(chunks) = fc;
         let mut new_chunks = Vec::new();
         let mut current_offset = 0u64;
@@ -839,75 +856,92 @@ impl RepositoryV1 {
             
             match chunk {
                 ChunkRef::InProgressBlock(block_ref) => {
-                    let mut writer = self.write_block(true, block_ref)?;
+                    let mut block_writer = self.writer.write_block(true, block_ref)?;
                     
                     // If this is the last chunk and write extends beyond it, extend the block
                     if current_offset + chunk_len == fc.len() && write_end_excl > chunk_end_excl {
                         let new_size = keep_at_beginning + (write_end_excl - chunk_begin);
-                        writer.resize_data(new_size)?;
-                        writer.write_header(&BlockChunkHeader { 
-                            id: block_ref.block_id, 
+                        block_writer.resize_data(new_size)?;
+                        block_writer.write_header(&BlockChunkHeader { 
+                            id: block_ref.id, 
                             len: new_size 
                         })?;
                         
                         // Write the data, including the extension
                         let buffer_slice = &buffer[write_offset_in_buffer as usize..];
-                        writer.write_data(keep_at_beginning, buffer_slice)?;
+                        block_writer.write_data(keep_at_beginning, buffer_slice)?;
                         
                         new_chunks.push(ChunkRef::InProgressBlock(BlockChunkRef {
-                            id: block_ref.block_id,
+                            id: block_ref.id,
                             len: new_size,
                         }));
                         current_offset = write_end_excl; // Important: update this so we don't add another chunk
                     } else {
                         // Normal case - just write into existing block
                         let buffer_slice = &buffer[write_offset_in_buffer as usize..][..size_to_write as usize];
-                        writer.write_data(keep_at_beginning, buffer_slice)?;
+                        block_writer.write_data(keep_at_beginning, buffer_slice)?;
                         new_chunks.push(chunk.clone());
                         current_offset = chunk_end_excl;
                     }
                 },
 
                 // For other types, convert to InProgressBlock if write is large enough
-                _ => {
+                other_chunk => {
                     if size_to_write > 1024 { // threshold for creating new block
                         // Create new InProgressBlock
-                        let mut writer = self.writer.create_in_progress_block()?;
-                        
+                        let (uuid, mut block_writer) = self.writer.create_in_progress_block()?;
+                        let total_size = keep_at_beginning + size_to_write + keep_at_tail;
+
                         // Copy existing data if needed
                         if keep_at_beginning > 0 {
-                            // TODO: copy beginning from old chunk
+                            let mut beginning_buffer = vec![0u8; keep_at_beginning as usize];
+                            self.read_from_chunk(other_chunk, 0, &mut beginning_buffer)?;
+                            block_writer.write_data(0, &beginning_buffer)?;
                         }
-                        
+
                         // Write new data
                         let buffer_slice = &buffer[write_offset_in_buffer as usize..][..size_to_write as usize];
-                        writer.write_data(keep_at_beginning, buffer_slice)?;
-                        
+                        block_writer.write_data(keep_at_beginning, buffer_slice)?;
+
                         if keep_at_tail > 0 {
-                            // TODO: copy tail from old chunk
+                            let mut tail_buffer = vec![0u8; keep_at_tail as usize];
+                            self.read_from_chunk(other_chunk, chunk_len - keep_at_tail, &mut tail_buffer)?;
+                            block_writer.write_data(keep_at_beginning + size_to_write, &tail_buffer)?;
                         }
-                        
+
+                        block_writer.write_header(&BlockChunkHeader {
+                            id: uuid,
+                            len: total_size,
+                        })?;
+
                         new_chunks.push(ChunkRef::InProgressBlock(BlockChunkRef {
-                            id: new_block_id,
-                            len: chunk_len,
+                            id: uuid,
+                            len: total_size,
                         }));
                     } else {
                         // For small writes, just create an Inline chunk
+                        let mut inline_data = Vec::with_capacity(chunk_len as usize);
+
                         if keep_at_beginning > 0 {
-                            // TODO: keep beginning of old chunk
+                            let mut beginning_buffer = vec![0u8; keep_at_beginning as usize];
+                            self.read_from_chunk(other_chunk, 0, &mut beginning_buffer)?;
+                            inline_data.extend_from_slice(&beginning_buffer);
                         }
-                        
+
                         // Add new inline data
                         let buffer_slice = &buffer[write_offset_in_buffer as usize..][..size_to_write as usize];
-                        new_chunks.push(ChunkRef::Inline(buffer_slice.to_vec()));
-                        
+                        inline_data.extend_from_slice(buffer_slice);
+
                         if keep_at_tail > 0 {
-                            // TODO: keep tail of old chunk
+                            let mut tail_buffer = vec![0u8; keep_at_tail as usize];
+                            self.read_from_chunk(other_chunk, chunk_len - keep_at_tail, &mut tail_buffer)?;
+                            inline_data.extend_from_slice(&tail_buffer);
                         }
+
+                        new_chunks.push(ChunkRef::Inline(inline_data));
                     }
+                    current_offset = chunk_end_excl;
                 }
-
-
             }
             
             current_offset = chunk_end_excl;
