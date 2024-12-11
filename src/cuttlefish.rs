@@ -51,7 +51,7 @@ use std::ops::Deref;
 
 const BLOCK_SIZE: u64 = 512;
 const MAX_NAME_LENGTH: u32 = 10_000;
-const MAX_FILE_SIZE: u64 = 1024 * 1024 * 1024 * 1024; // 1 TB
+const MAX_FILE_SIZE: u64 = 10 * 1024 * 1024 * 1024 * 1024; // 10 TB
 
 const FMODE_EXEC: i32 = 0x20;
 
@@ -292,8 +292,6 @@ struct SimpleFsState {
     fh_feistel: crypt::feistel::FeistelNetwork<u64, u32>,
 
     open_file_handles: RwLock<HashMap<u64, FileHandleEntry>>,
-
-    global_lock: RwLock<()>,
 }
 
 
@@ -319,7 +317,6 @@ impl SimpleFS {
                 fh_feistel: crypt::feistel::FeistelNetwork::new(1, vec![key]),
                 next_file_handle: AtomicU64::new(1),
                 open_file_handles: RwLock::new(HashMap::new()),
-                global_lock: RwLock::new(()),
             }
         };
 
@@ -413,7 +410,7 @@ impl SimpleFS {
         new_length: u64,
         uid: u32,
         gid: u32,
-    ) -> Result<(), crate::errors::ErrorKinds> {
+    ) -> MyResult<()> {
         if new_length > MAX_FILE_SIZE {
             Err(libc::EFBIG)?;
         }
@@ -566,7 +563,7 @@ impl SimpleFS {
                         last_modified: now,
                         last_metadata_changed: now,
                         kind: FileKind::Directory,
-                        mode: 0o755,
+                        mode: 0o777,
                         hardlinks: 2,
                         uid: 0,
                         gid: 0,
@@ -576,7 +573,7 @@ impl SimpleFS {
                     entries.insert(b".".to_vec(), (FUSE_ROOT_ID, FileKind::Directory));
                     entries.insert(b"..".to_vec(), (FUSE_ROOT_ID, FileKind::Directory));
                     let root_node = InodeEntry {attrs: root_attr, content: InodeContent::Directory(entries) };
-                    self.repository.write_inode(FUSE_ROOT_ID, &root_node).map_err(|e|*e)?;
+                    self.repository.write_inode(FUSE_ROOT_ID, &root_node)?;
                     return Ok(());
                     
                 } else {
@@ -1062,7 +1059,7 @@ impl Filesystem for SimpleFS {
 
 
 
-type ReplyResult<T> = Result<T, ErrorKinds>;
+type ReplyResult<T> = MyResult<T>;
 
 struct ReplyEntryOk {
     ttl: Duration,
@@ -2377,8 +2374,8 @@ fn setattr_syn(
             src_fh, src_inode, src_offset, dest_fh, dest_inode, dest_offset, size
         );
 
-        assert!(src_offset > 0);
-        assert!(dest_offset > 0);
+        assert!(src_offset >= 0);
+        assert!(dest_offset >= 0);
         let src_offset : u64 = src_offset as u64;
         let dest_offset : u64 = dest_offset as u64;
 

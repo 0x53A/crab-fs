@@ -470,7 +470,7 @@ impl BlockChunkWriter {
         Self { file }
     }
 
-    pub fn read_header(&mut self) -> Result<BlockChunkHeader, ErrorKinds> {
+    pub fn read_header(&mut self) -> MyResult<BlockChunkHeader> {
         let mut buffer = [0u8;BlockChunkHeader::SIZE];
         self.file.seek(SeekFrom::Start(0))?;
         self.file.read_exact(&mut buffer)?;
@@ -492,7 +492,7 @@ impl BlockChunkWriter {
         Ok(())
     }
 
-    pub fn write_header(&mut self, header: &BlockChunkHeader) -> Result<(), ErrorKinds> {
+    pub fn write_header(&mut self, header: &BlockChunkHeader) -> MyResult<()> {
         let serialized = bincode::serialize(header)?;
         self.file.seek(SeekFrom::Start(0))?;
         self.file.write_all(&serialized)?;
@@ -521,7 +521,7 @@ impl BlockChunkWriter {
         Ok(())
     }
 
-    pub fn write_data_zero_range(&self, offset: u64, size: u64) -> Result<(), ErrorKinds> {
+    pub fn write_data_zero_range(&self, offset: u64, size: u64) -> MyResult<()> {
         zero_file_range(&self.file, BlockChunk::OFFSET_OF_ACTUAL_DATA as u64 + offset, size)?;
         Ok(())
     }
@@ -542,14 +542,16 @@ impl BlockChunkWriter {
 
 pub struct FilesystemWriter {
     data_dir: PathBuf,
-    rng: rand::rngs::StdRng
+    rng: rand::rngs::StdRng,
+    global_lock: RwLock<()>,
 }
 
 impl FilesystemWriter {
     pub fn new(data_dir: PathBuf) -> Self {
         Self {
             data_dir,
-            rng: rand::rngs::StdRng::from_entropy()
+            rng: rand::rngs::StdRng::from_entropy(),
+            global_lock: RwLock::new(()),
         }
     }
 
@@ -570,7 +572,8 @@ impl FilesystemWriter {
         let path = self.get_meta_path(Self::META_NEXT_INODE);
         let tmp_path = path.with_added_extension(".tmp");
         let writer = self.create(&tmp_path)?;
-        bincode::serialize_into(writer, &(1))?;
+        let inode: Inode = 1;
+        bincode::serialize_into(writer, &inode)?;
         fs::rename(tmp_path, path)?;
         Ok(())
     }
@@ -624,7 +627,7 @@ impl FilesystemWriter {
     pub fn write_inode(&self, ino: Inode, content: &InodeEntry) -> MyResult<()>  {
         assert!(ino == content.attrs.inode);
         let path = self.inode_path(ino);
-        let file = self.open_write(path)?;
+        let file = self.create(path)?;
         bincode::serialize_into(file, content).unwrap();
         Ok(())
     }
@@ -682,7 +685,9 @@ impl FilesystemWriter {
 
     const META_NEXT_INODE : &str = "next_inode";
 
-    pub fn meta_get_next_inode(&self) -> Result<Inode, ErrorKinds> {
+    pub fn meta_get_next_inode(&self) -> MyResult<Inode> {
+
+        let write_guard = self.global_lock.write()?;
 
         let path = self.get_meta_path(Self::META_NEXT_INODE);
 
@@ -759,7 +764,7 @@ impl RepositoryV1 {
         self.writer.write_inode(ino, content)
     }
 
-    fn truncate_chunk(&self, chunk: ChunkRef, truncated_size: u64) -> Result<ChunkRef, ErrorKinds> {
+    fn truncate_chunk(&self, chunk: ChunkRef, truncated_size: u64) -> MyResult<ChunkRef> {
 
         if truncated_size == chunk.len() {
             return Ok(chunk);
@@ -792,7 +797,7 @@ impl RepositoryV1 {
         }
     }
 
-    pub fn change_content_len(&self, mut old_content: FileContent, new_length: u64) -> Result<FileContent, ErrorKinds> {
+    pub fn change_content_len(&self, mut old_content: FileContent, new_length: u64) -> MyResult<FileContent> {
         if new_length == old_content.len() {
             return Ok(old_content);
         } else if new_length == 0 {
@@ -835,7 +840,7 @@ impl RepositoryV1 {
         }
     }
 
-    pub fn allocate_next_inode(&self) -> Result<Inode, ErrorKinds> {
+    pub fn allocate_next_inode(&self) -> MyResult<Inode> {
         self.writer.meta_get_next_inode()
     }
 
@@ -1176,12 +1181,12 @@ impl RepositoryV1 {
     pub fn copy_range_in_chunks(&mut self, from: &ChunkRef, to: &ChunkRef, src_offset: u64, dest_offset: u64, size: u64) -> MyResult<Vec<ChunkRef>> {
         // Validate source range is inside source chunk
         if src_offset + size > from.len() {
-            return Err(ErrorKinds::C_Int(libc::EINVAL));
+            Err(libc::EINVAL)?;
         }
 
         // validate there's no 'hole' in dest chunk
         if dest_offset > to.len() {
-            return Err(ErrorKinds::C_Int(libc::EINVAL));
+            Err(libc::EINVAL)?;
         }
     
         match to {    
@@ -1266,12 +1271,12 @@ impl RepositoryV1 {
     pub fn copy_range(&mut self, from: &FileContent, to: &FileContent, src_offset: u64, dest_offset: u64, size: u64) -> MyResult<FileContent> {
         // Validate source range is inside source chunk
         if src_offset + size > from.len() {
-            return Err(ErrorKinds::C_Int(libc::EINVAL));
+            Err(libc::EINVAL)?;
         }
 
         // validate there's no 'hole' in dest chunk
         if dest_offset > to.len() {
-            return Err(ErrorKinds::C_Int(libc::EINVAL));
+            Err(libc::EINVAL)?;
         }
 
         let FileContent::Chunks(from_chunks) = from;
@@ -1433,7 +1438,7 @@ impl RepositoryV1 {
         Ok(result)
     }
 
-    pub fn zero_range(&self, file: &FileContent, offset: u64, size: u64) -> Result<FileContent, ErrorKinds> {
+    pub fn zero_range(&self, file: &FileContent, offset: u64, size: u64) -> MyResult<FileContent> {
 
         // zero a range in a File. The File may consist of multiple Chunks.
         // If the range intersects with an `InProgressBlock`, then:

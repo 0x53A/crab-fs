@@ -109,6 +109,14 @@ fn main() {
     let mount_cmd = Command::new("mount")
     .arg(arg_key)
     .arg(arg_dir)
+    
+    .arg(
+        Arg::new("mount-point")
+        .long("mount-point")
+        .short('m')
+        .value_name("MOUNT_POINT")
+        .help("Act as a client, and mount FUSE at given path")
+    )
     .arg(
         Arg::new("direct-io")
             .long("direct-io")
@@ -123,7 +131,7 @@ fn main() {
             .help("Enable setuid support when run as root"),
     );
 
-    
+
     let matches = Command::new("Crab-FS")
         .version(crate_version!())
         .author("Lukas Rieger")
@@ -166,64 +174,88 @@ fn main() {
         .filter_level(log_level)
         .init();
 
-    let mut options = vec![MountOption::FSName("crab-fs".to_string())];
+    if let Some(init) = matches.subcommand_matches("init") {
+
+        let key_string = init.get_one::<String>("encryption-key").unwrap().to_string();
+        let key: [u8;ENCRYPTION_KEY_LENGTH] = base64::decode(key_string).unwrap().try_into().expect("incorrect base64 encryption key length");
+    
+        let data_dir = init.get_one::<String>("data-dir").unwrap().to_string();
+
+        let mut fs = SimpleFS::new(SimpleFsOptions::default(), key, data_dir);
+        match fs.create_fs() {
+            Ok(_) => {
+                println!("Successfully created filesystem");
+            },
+            Err(err) => {
+
+                println!("Error: {:?}", err);
+            }
+        }
+        return;
+    }
+
+    if let Some(mount) = matches.subcommand_matches("mount") {
+
+        let key_string = mount.get_one::<String>("encryption-key").unwrap().to_string();
+        let key: [u8;ENCRYPTION_KEY_LENGTH] = base64::decode(key_string).unwrap().try_into().expect("incorrect base64 encryption key length");
+    
+        let data_dir = mount.get_one::<String>("data-dir").unwrap().to_string();
+
+        let mountpoint: String = mount
+            .get_one::<String>("mount-point")
+            .unwrap()
+            .to_string();
+        
+        let mut options = vec![MountOption::FSName("cuttlefish-fs".to_string())];
 
 
-    #[cfg(feature = "abi-7-26")]
-    {
-        if matches.get_flag("suid") {
-            info!("setuid bit support enabled");
-            options.push(MountOption::Suid);
-        } else {
+        #[cfg(feature = "abi-7-26")]
+        {
+            if mount.get_flag("suid") {
+                info!("setuid bit support enabled");
+                options.push(MountOption::Suid);
+            } else {
+                options.push(MountOption::AutoUnmount);
+            }
+        }
+        #[cfg(not(feature = "abi-7-26"))]
+        {
             options.push(MountOption::AutoUnmount);
         }
-    }
-    #[cfg(not(feature = "abi-7-26"))]
-    {
-        options.push(MountOption::AutoUnmount);
-    }
-    if let Ok(enabled) = fuse_allow_other_enabled() {
-        if enabled {
-            options.push(MountOption::AllowOther);
+        if let Ok(enabled) = fuse_allow_other_enabled() {
+            if enabled {
+                options.push(MountOption::AllowOther);
+            }
+        } else {
+            eprintln!("Unable to read /etc/fuse.conf");
         }
-    } else {
-        eprintln!("Unable to read /etc/fuse.conf");
-    }
 
-    let key_string = matches.get_one::<String>("encryption-key").unwrap().to_string();
-    let key: [u8;ENCRYPTION_KEY_LENGTH] = base64::decode(key_string).unwrap().try_into().expect("incorrect base64 encryption key length");
+        
+        debug!("calling [fuser::mount2] with options={options:?}");
 
-    let data_dir = matches.get_one::<String>("data-dir").unwrap().to_string();
+        let fs_options = SimpleFsOptions {
+            direct_io: mount.get_flag("direct-io"),
+            #[cfg(feature = "abi-7-26")]
+            suid_support: mount.get_flag("suid"),
+            ..SimpleFsOptions::default()
+        };
 
-    let mountpoint: String = matches
-        .get_one::<String>("mount-point")
-        .unwrap()
-        .to_string();
-
-    debug!("calling [fuser::mount2] with options={options:?}");
-
-    let fs_options = SimpleFsOptions {
-        direct_io: matches.get_flag("direct-io"),
-        #[cfg(feature = "abi-7-26")]
-        suid_support: matches.get_flag("suid"),
-        ..SimpleFsOptions::default()
-    };
-
-    let result = fuser::mount2(
-        SimpleFS::new(
-            fs_options,
-            key,
-            data_dir,
-        ),
-        mountpoint,
-        &options,
-    );
-    if let Err(e) = result {
-        // Return a special error code for permission denied, which usually indicates that
-        // "user_allow_other" is missing from /etc/fuse.conf
-        if e.kind() == ErrorKind::PermissionDenied {
-            error!("{}", e.to_string());
-            std::process::exit(2);
+        let result = fuser::mount2(
+            SimpleFS::new(
+                fs_options,
+                key,
+                data_dir,
+            ),
+            mountpoint,
+            &options,
+        );
+        if let Err(e) = result {
+            // Return a special error code for permission denied, which usually indicates that
+            // "user_allow_other" is missing from /etc/fuse.conf
+            if e.kind() == ErrorKind::PermissionDenied {
+                error!("{}", e.to_string());
+                std::process::exit(2);
+            }
         }
     }
 }

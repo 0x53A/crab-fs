@@ -133,7 +133,7 @@ mod tests {
     #[test]
     fn test_u64_encryption_decryption() {
         let keys = vec![0x1234u32, 0x5678, 0x9ABC, 0xDEF0];
-        let network = FeistelNetwork::<u64, u32>::new(4, keys).unwrap();
+        let network = FeistelNetwork::<u64, u32>::new(4, keys);
         
         let plaintext = 0x123456789ABCDEF0u64;
         let ciphertext = network.encrypt(plaintext);
@@ -145,7 +145,7 @@ mod tests {
     #[test]
     fn test_u32_encryption_decryption() {
         let keys = vec![0x1234u16, 0x5678, 0x9ABC, 0xDEF0];
-        let network = FeistelNetwork::<u32, u16>::new(4, keys).unwrap();
+        let network = FeistelNetwork::<u32, u16>::new(4, keys);
         
         let plaintext = 0x12345678u32;
         let ciphertext = network.encrypt(plaintext);
@@ -157,7 +157,7 @@ mod tests {
     #[test]
     fn test_u16_encryption_decryption() {
         let keys = vec![0x12u8, 0x34, 0x56, 0x78];
-        let network = FeistelNetwork::<u16, u8>::new(4, keys).unwrap();
+        let network = FeistelNetwork::<u16, u8>::new(4, keys);
         
         let plaintext = 0x1234u16;
         let ciphertext = network.encrypt(plaintext);
