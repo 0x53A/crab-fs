@@ -109,29 +109,29 @@ fn main() {
         .arg(arg_dir.clone());
 
     let mount_cmd = Command::new("mount")
-    .arg(arg_key)
-    .arg(arg_dir)
-    
-    .arg(
-        Arg::new("mount-point")
-        .long("mount-point")
-        .short('m')
-        .value_name("MOUNT_POINT")
-        .help("Act as a client, and mount FUSE at given path")
-    )
-    .arg(
-        Arg::new("direct-io")
-            .long("direct-io")
-            .action(ArgAction::SetTrue)
-            .requires("mount-point")
-            .help("Mount FUSE with direct IO"),
-    )
-    .arg(
-        Arg::new("suid")
-            .long("suid")
-            .action(ArgAction::SetTrue)
-            .help("Enable setuid support when run as root"),
-    );
+        .arg(arg_key)
+        .arg(arg_dir)
+        
+        .arg(
+            Arg::new("mount-point")
+            .long("mount-point")
+            .short('m')
+            .value_name("MOUNT_POINT")
+            .help("Act as a client, and mount FUSE at given path")
+        )
+        .arg(
+            Arg::new("direct-io")
+                .long("direct-io")
+                .action(ArgAction::SetTrue)
+                .requires("mount-point")
+                .help("Mount FUSE with direct IO"),
+        )
+        .arg(
+            Arg::new("suid")
+                .long("suid")
+                .action(ArgAction::SetTrue)
+                .help("Enable setuid support when run as root"),
+        );
 
 
     let matches = Command::new("Crab-FS")

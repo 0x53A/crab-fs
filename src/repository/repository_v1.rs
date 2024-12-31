@@ -106,11 +106,6 @@ pub struct BlockChunk {
     pub data: Vec<u8>
 }
 
-// #[derive(Serialize, Deserialize)]
-// pub enum VersionedBlockChunk {
-//     V1(BlockChunk)
-// }
-
 // note: the way bincode works, 'len' in this struct maps to the length of the vector 'data' in the serialized representation of BlockChunk
 #[derive(Serialize, Deserialize, Clone)]
 pub struct BlockChunkHeader {
@@ -160,85 +155,6 @@ pub struct Range {
     pub len: u64
 }
 
-// #[derive(Serialize, Deserialize, Clone)]
-// pub struct SparseBlockPart {
-    
-// }
-
-// #[derive(Serialize, Deserialize, Clone)]
-// pub struct SparseBlockHeader {
-
-// }
-
-// #[derive(Serialize, Deserialize, Clone)]
-// pub struct SparseBlock {
-//     pub header: SparseBlockHeader,
-//     pub parts: SparseBlockPart
-// }
-
-// /// Example:
-// /// You have a base-chunk with the following data: B=[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A].
-// /// You have an Overlay Chunk referencing this chunk.
-// ///   OverlayChunk X:
-// ///     header:
-// ///       { base_chunk_ref: B, base_chunk_range: (0, 10), offset: 0 }
-// ///     modified_buffers:
-// ///       [ (5, [0xff])]
-// ///   Result:
-// ///     X= [0x01, 0x02, 0x03, 0x04, 0x05, 0xff, 0x07, 0x08, 0x09, 0x0A]
-// ///     (a single byte has been replaced)
-// #[derive(Serialize, Deserialize)]
-// pub struct OverlayChunkHeader {
-//     pub hash: ChunkId,
-//     /// the size of this chunk, can be longer or shorter than the base chunk
-//     pub len: usize,
-// }
-
-// /// a Chunk that references one base chunk and contains one or more modified ranges.
-// /// Note: modified ranges may not overlap each other!
-// #[derive(Serialize, Deserialize)]
-// pub struct OverlayChunk {
-//     header: OverlayChunkHeader,
-
-//     pub base_chunk_ref: ChunkRef,
-//     /// which part of the base Chunk to project into out Chunk
-//     pub base_chunk_range: Range,
-
-//     // a list of ranges that have been zeroed
-//     zeroed_ranges: Vec<Range>,
-
-//     // these two vecs are the same length. Each buffer is splatted over the base chunk at the 'offset' position.
-//     // A buffer can either overlap the base chunk, or be appended to its end, but the whole OverlayChunk must be continuous, that is, there must not be any holes.
-//     modified_offsets: Vec<usize>,
-//     modified_buffers: Vec<Vec<u8>>
-// }
-
-// #[derive(Serialize, Deserialize)]
-// pub struct ChunkRef {
-//     /// the hash of the data chunk, or 0 if ChunkKind::Zero
-//     pub id: ChunkId,
-//     /// note: this len MUST match exactly with the length of the chunk that is referenced.
-//     /// It is duplicated here so we don't need to actually open the chunk to find out the length.
-//     pub len: usize,
-//     pub kind: ChunkKind
-// }
-
-// // allow sparse inline files
-// #[derive(Serialize, Deserialize)]
-// pub enum InlineChunk {
-//     Data(Vec<u8>),
-//     Null(usize)
-// }
-
-// #[derive(Serialize, Deserialize)]
-// impl InlineChunk {
-//     fn len(&self) -> usize {
-//         match self {
-//             InlineChunk::Data(bytes) => bytes.len(),
-//             InlineChunk::Null(size) => *size,
-//         }
-//     }
-// }
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct BlockChunkRef {
@@ -461,25 +377,6 @@ impl<F: FS> FilesystemWriter<F> {
     fn hash_to_pathsegment(id: &ChunkId) -> PathBuf {
         PathBuf::from(format!("{:x?}", id))
     }
-
-    // fn open_read<P: AsRef<Path>>(&self, path: P) -> MyResult<F::File> {
-    //     let file = OpenOptions::new().read(true).open(path.as_ref())?;
-    //     return Ok(file);
-    // }
-
-    // fn open_write<P: AsRef<Path>>(&self, path: P) -> MyResult<F::File> {
-    //     let file = OpenOptions::new().write(true).open(path.as_ref())?;
-    //     return Ok(file);
-    // }
-
-    // fn create<P: AsRef<Path>>(&self, path: P) -> MyResult<F::File> {
-    //     let file = OpenOptions::new()
-    //         .write(true)
-    //         .create(true)
-    //         .truncate(true)
-    //         .open(path.as_ref())?;
-    //     return Ok(file);
-    // }
 
     fn inode_path(&self, inode: Inode) -> PathBuf {
         let path = Path::new(&self.data_dir)
