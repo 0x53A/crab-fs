@@ -9,7 +9,7 @@ use log::{debug, warn};
 use log::{error, LevelFilter};
 use std::cmp::min;
 use std::ffi::OsStr;
-use std::fs::{File, OpenOptions};
+use std::fs::{OpenOptions};
 use std::io::{BufRead, BufReader, ErrorKind, Read, Seek, SeekFrom, Write};
 use std::os::raw::c_int;
 use std::os::unix::ffi::OsStrExt;
@@ -19,7 +19,6 @@ use std::os::unix::io::IntoRawFd;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use std::{env, fs, io};
 
 use std::collections::HashMap;
 use std::sync::RwLock;
@@ -30,6 +29,7 @@ use rand::{RngCore, SeedableRng};
 use blake3::Hasher;
 
 use crate::errors::{MyResult, ErrorKinds};
+use crate::io::fs::{Len, SetLen, FS};
 // use bincode_maxsize_derive::BincodeMaxSize;
 
 
@@ -336,138 +336,14 @@ pub struct InodeEntry {
 }
 
 
-// ------------------------
-
-#[cfg(target_os = "linux")]
-fn zero_file_range_linux(file: &File, offset: u64, len: u64) -> io::Result<()> {
-    use std::os::unix::io::AsRawFd;
-    
-    let ret = unsafe {
-        libc::fallocate(
-            file.as_raw_fd(),
-            libc::FALLOC_FL_PUNCH_HOLE | libc::FALLOC_FL_KEEP_SIZE,
-            offset as libc::off_t,
-            len as libc::off_t
-        )
-    };
-
-    if ret == 0 {
-        Ok(())
-    } else {
-        Err(io::Error::last_os_error())
-    }
+pub struct BlockChunkWriter<F:FS> {
+    fs: F,
+    file: F::File
 }
 
-// Fallback implementation for other platforms or if fallocate fails
-fn zero_file_range_fallback(file: &File, offset: u64, len: u64) -> io::Result<()> {
-    use std::os::unix::fs::FileExt;
-    
-    // Write in chunks to avoid large allocations
-    const CHUNK_SIZE: usize = 64 * 1024; // 64KB chunks
-    let zeros = vec![0u8; CHUNK_SIZE];
-    
-    let mut remaining = len;
-    let mut current_offset = offset;
-    
-    while remaining > 0 {
-        let write_size = std::cmp::min(remaining, CHUNK_SIZE as u64) as usize;
-        file.write_at(&zeros[..write_size], current_offset)?;
-        remaining -= write_size as u64;
-        current_offset += write_size as u64;
-    }
-    
-    Ok(())
-}
-
-// Combined function that tries fallocate first, then falls back
-fn zero_file_range(file: &File, offset: u64, len: u64) -> io::Result<()> {
-    #[cfg(target_os = "linux")]
-    {
-        match zero_file_range_linux(file, offset, len) {
-            Ok(()) => return Ok(()),
-            Err(_) => {} // Fall through to fallback
-        }
-    }
-    
-    zero_file_range_fallback(file, offset, len)
-}
-
-// ------------------------
-
-#[cfg(target_os = "linux")]
-fn copy_file_range_linux(
-    src_file: &File,
-    src_offset: u64,
-    dst_file: &File,
-    dst_offset: u64,
-    len: u64,
-) -> io::Result<u64> {
-    use std::os::unix::io::AsRawFd;
-    
-    let mut src_off = src_offset as i64;
-    let mut dst_off = dst_offset as i64;
-    let ret = unsafe {
-        libc::copy_file_range(
-            src_file.as_raw_fd(),
-            &mut src_off,
-            dst_file.as_raw_fd(),
-            &mut dst_off,
-            len as usize,
-            0  // flags
-        )
-    };
-
-    if ret >= 0 {
-        Ok(ret as u64)
-    } else {
-        Err(io::Error::last_os_error())
-    }
-}
-
-fn copy_file_range(
-    mut src_file: &File,
-    src_offset: u64,
-    mut dst_file: &File,
-    dst_offset: u64,
-    len: u64,
-) -> io::Result<u64> {
-    #[cfg(target_os = "linux")]
-    {
-        match copy_file_range_linux(src_file, src_offset, dst_file, dst_offset, len) {
-            Ok(n) => return Ok(n),
-            Err(_) => {} // Fall through to fallback
-        }
-    }
-
-    // Fallback implementation
-    let mut buffer = vec![0u8; std::cmp::min(len as usize, 64 * 1024)]; // 64KB chunks
-    let mut total_copied = 0u64;
-    let mut remaining = len;
-
-    while remaining > 0 {
-        let to_copy = std::cmp::min(remaining, buffer.len() as u64);
-        src_file.seek(SeekFrom::Start(src_offset + total_copied))?;
-        src_file.read_exact(&mut buffer[..to_copy as usize])?;
-        
-        dst_file.seek(SeekFrom::Start(dst_offset + total_copied))?;
-        dst_file.write_all(&buffer[..to_copy as usize])?;
-        
-        total_copied += to_copy;
-        remaining -= to_copy;
-    }
-
-    Ok(total_copied)
-}
-
-// ------------------------
-
-pub struct BlockChunkWriter {
-    file: File
-}
-
-impl BlockChunkWriter {
-    pub fn new(file: File) -> Self {
-        Self { file }
+impl<F:FS> BlockChunkWriter<F> {
+    pub fn new(fs: F, file: F::File) -> Self {
+        Self { fs, file }
     }
 
     pub fn read_header(&mut self) -> MyResult<BlockChunkHeader> {
@@ -478,7 +354,7 @@ impl BlockChunkWriter {
 
         // if debug?
         {
-            let file_size = self.file.metadata()?.len();
+            let file_size = self.file.len()?;
             let header_size = header.len;
             assert_eq!(file_size, header_size + BlockChunk::OFFSET_OF_ACTUAL_DATA as u64);
         }
@@ -521,16 +397,16 @@ impl BlockChunkWriter {
         Ok(())
     }
 
-    pub fn write_data_zero_range(&self, offset: u64, size: u64) -> MyResult<()> {
-        zero_file_range(&self.file, BlockChunk::OFFSET_OF_ACTUAL_DATA as u64 + offset, size)?;
+    pub fn write_data_zero_range(&mut self, offset: u64, size: u64) -> MyResult<()> {
+        self.fs.zero_file_range(&mut self.file, BlockChunk::OFFSET_OF_ACTUAL_DATA as u64 + offset, size)?;
         Ok(())
     }
 
-    pub fn copy_data(&self, source: &BlockChunkWriter, src_offset: u64, dst_offset: u64, size: u64) -> MyResult<()> {
-        copy_file_range(
-            &source.file,
+    pub fn copy_data(&mut self, source: &mut BlockChunkWriter<F>, src_offset: u64, dst_offset: u64, size: u64) -> MyResult<()> {
+        self.fs.copy_file_range(
+            &mut source.file,
             BlockChunk::OFFSET_OF_ACTUAL_DATA as u64 + src_offset,
-            &self.file,
+            &mut self.file,
             BlockChunk::OFFSET_OF_ACTUAL_DATA as u64 + dst_offset,
             size
         )?;
@@ -540,15 +416,17 @@ impl BlockChunkWriter {
 
 // ------------------------
 
-pub struct FilesystemWriter {
+pub struct FilesystemWriter<F: FS> {
+    fs: F,
     data_dir: PathBuf,
     rng: rand::rngs::StdRng,
     global_lock: RwLock<()>,
 }
 
-impl FilesystemWriter {
-    pub fn new(data_dir: PathBuf) -> Self {
+impl<F: FS> FilesystemWriter<F> {
+    pub fn new(fs: F, data_dir: PathBuf) -> Self {
         Self {
+            fs,
             data_dir,
             rng: rand::rngs::StdRng::from_entropy(),
             global_lock: RwLock::new(()),
@@ -557,12 +435,12 @@ impl FilesystemWriter {
 
     /// idempotent, can be called multiple times
     pub fn init(&self) -> MyResult<()> {
-        fs::create_dir_all(Path::new(&self.data_dir).join("meta"))?;
-        fs::create_dir_all(Path::new(&self.data_dir).join("inodes"))?;
-        fs::create_dir_all(Path::new(&self.data_dir).join("contents"))?;
+        self.fs.create_dir_all(Path::new(&self.data_dir).join("meta"))?;
+        self.fs.create_dir_all(Path::new(&self.data_dir).join("inodes"))?;
+        self.fs.create_dir_all(Path::new(&self.data_dir).join("contents"))?;
 
-        fs::create_dir_all(Path::new(&self.data_dir).join("contents").join("blocks"))?;
-        fs::create_dir_all(Path::new(&self.data_dir).join("contents").join("in-progress"))?;
+        self.fs.create_dir_all(Path::new(&self.data_dir).join("contents").join("blocks"))?;
+        self.fs.create_dir_all(Path::new(&self.data_dir).join("contents").join("in-progress"))?;
 
         Ok(())
     }
@@ -571,10 +449,10 @@ impl FilesystemWriter {
     pub fn create_new_fs(&self) -> MyResult<()> {
         let path = self.get_meta_path(Self::META_NEXT_INODE);
         let tmp_path = path.with_added_extension(".tmp");
-        let writer = self.create(&tmp_path)?;
+        let writer = self.fs.create(&tmp_path)?;
         let inode: Inode = 1;
         bincode::serialize_into(writer, &inode)?;
-        fs::rename(tmp_path, path)?;
+        self.fs.rename(tmp_path, path)?;
         Ok(())
     }
 
@@ -584,24 +462,24 @@ impl FilesystemWriter {
         PathBuf::from(format!("{:x?}", id))
     }
 
-    fn open_read<P: AsRef<Path>>(&self, path: P) -> MyResult<File> {
-        let file = OpenOptions::new().read(true).open(path.as_ref())?;
-        return Ok(file);
-    }
+    // fn open_read<P: AsRef<Path>>(&self, path: P) -> MyResult<F::File> {
+    //     let file = OpenOptions::new().read(true).open(path.as_ref())?;
+    //     return Ok(file);
+    // }
 
-    fn open_write<P: AsRef<Path>>(&self, path: P) -> MyResult<File> {
-        let file = OpenOptions::new().write(true).open(path.as_ref())?;
-        return Ok(file);
-    }
+    // fn open_write<P: AsRef<Path>>(&self, path: P) -> MyResult<F::File> {
+    //     let file = OpenOptions::new().write(true).open(path.as_ref())?;
+    //     return Ok(file);
+    // }
 
-    fn create<P: AsRef<Path>>(&self, path: P) -> MyResult<File> {
-        let file = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(path.as_ref())?;
-        return Ok(file);
-    }
+    // fn create<P: AsRef<Path>>(&self, path: P) -> MyResult<F::File> {
+    //     let file = OpenOptions::new()
+    //         .write(true)
+    //         .create(true)
+    //         .truncate(true)
+    //         .open(path.as_ref())?;
+    //     return Ok(file);
+    // }
 
     fn inode_path(&self, inode: Inode) -> PathBuf {
         let path = Path::new(&self.data_dir)
@@ -620,14 +498,14 @@ impl FilesystemWriter {
 
     pub fn get_inode(&self, inode: Inode) -> MyResult<InodeEntry> {
         let path = self.inode_path(inode);
-        let file = self.open_read(path)?;
+        let file = self.fs.open_read(path)?;
         Ok(bincode::deserialize_from(file).unwrap())
     }
 
     pub fn write_inode(&self, ino: Inode, content: &InodeEntry) -> MyResult<()>  {
         assert!(ino == content.attrs.inode);
         let path = self.inode_path(ino);
-        let file = self.create(path)?;
+        let file = self.fs.create(path)?;
         bincode::serialize_into(file, content).unwrap();
         Ok(())
     }
@@ -646,24 +524,24 @@ impl FilesystemWriter {
     // Blocks
     // ----------------------
 
-    pub fn read_block(&self, is_in_progress:bool, id: &ChunkId) -> MyResult<BlockChunkWriter> {
+    pub fn read_block(&self, is_in_progress:bool, id: &ChunkId) -> MyResult<BlockChunkWriter<F>> {
         let path = self.block_path(is_in_progress, id);
-        let file = self.open_read(path)?;
-        Ok(BlockChunkWriter::new(file))
+        let file = self.fs.open_read(path)?;
+        Ok(BlockChunkWriter::new(self.fs.clone(), file))
     }
 
-    pub fn write_block(&self, is_in_progress: bool, id: &ChunkId) -> MyResult<BlockChunkWriter> {        
+    pub fn write_block(&self, is_in_progress: bool, id: &ChunkId) -> MyResult<BlockChunkWriter<F>> {        
         let path = self.block_path(is_in_progress, id);
-        let file = self.open_write(path)?;
-        Ok(BlockChunkWriter::new(file))
+        let file = self.fs.open_write(path)?;
+        Ok(BlockChunkWriter::new(self.fs.clone(), file))
     }
     
     /// note: the block is completely empty even without a header!
-    pub fn create_in_progress_block(&mut self) -> MyResult<(ChunkId, BlockChunkWriter)> {
+    pub fn create_in_progress_block(&mut self) -> MyResult<(ChunkId, BlockChunkWriter<F>)> {
         let uuid : ChunkId = self.get_uuid();
         let path = self.block_path(true, &uuid);
-        let file = self.create(path)?;
-        let writer = BlockChunkWriter::new(file);
+        let file = self.fs.create(path)?;
+        let writer = BlockChunkWriter::new(self.fs.clone(), file);
         Ok((uuid, writer))
     }
 
@@ -694,13 +572,13 @@ impl FilesystemWriter {
         // note: if the file becomes corrupt, no more inodes can be allocated, so no new files or directories can be created.
         //       at the very least, an expressive error message should be bubbled up to the user, and a "repair" command be added to the cli
         //       which would just scan the whole filesystem and reset it to the highest found value.
-        let current_inode: Inode = bincode::deserialize_from(self.open_read(&path)?)?;
+        let current_inode: Inode = bincode::deserialize_from(self.fs.open_read(&path)?)?;
 
         // do an atomic replace of the file
         let tmp_path = path.with_added_extension(".tmp");
-        let writer = self.create(&tmp_path)?;
+        let writer = self.fs.create(&tmp_path)?;
         bincode::serialize_into(writer, &(current_inode + 1))?;
-        fs::rename(tmp_path, path)?;
+        self.fs.rename(tmp_path, path)?;
 
         Ok(current_inode + 1)
     }
@@ -710,6 +588,8 @@ impl FilesystemWriter {
 
 #[cfg(test)]
 mod FilesystemWriter_tests {
+    use crate::io::fs::DummyFS;
+
     use super::*;
     #[test]
     pub fn test_hash_to_pathsegment() {
@@ -719,7 +599,7 @@ mod FilesystemWriter_tests {
 
         for tc in testcases {
             let (input, expected) = tc;
-            let actual = FilesystemWriter::hash_to_pathsegment(&input);
+            let actual = FilesystemWriter::<DummyFS>::hash_to_pathsegment(&input);
             assert_eq!(actual.to_str().unwrap(), expected);
         }
     }
@@ -732,16 +612,16 @@ pub struct RepositoryOptions {
 
 }
 
-pub struct RepositoryV1 {
+pub struct RepositoryV1<F:FS> {
     options: RepositoryOptions,
-    writer: FilesystemWriter
+    writer: FilesystemWriter<F>
 }
 
-impl RepositoryV1 {
-    pub fn new(data_dir: PathBuf, options: RepositoryOptions) -> Self {
+impl<F:FS> RepositoryV1<F> {
+    pub fn new(fs: F, data_dir: PathBuf, options: RepositoryOptions) -> Self {
         Self {
             options,
-            writer: FilesystemWriter::new(data_dir)
+            writer: FilesystemWriter::new(fs, data_dir)
         }
     }
 
@@ -1196,18 +1076,18 @@ impl RepositoryV1 {
                     // Efficient block-to-block copy
                     ChunkRef::Block(BlockChunkRef {id: src_block_id, len: src_block_len}) 
                         | ChunkRef::InProgressBlock(InProgressBlockChunkRef {id: src_block_id, len: src_block_len}) => {
-                        let src_writer = self.writer.read_block(matches!(from, ChunkRef::InProgressBlock(_)), &src_block_id)?;
-                        let dst_writer = self.writer.write_block(true, &dst_block.id)?;
-                        dst_writer.copy_data(&src_writer, src_offset, dest_offset, size)?;
+                        let mut src_writer = self.writer.read_block(matches!(from, ChunkRef::InProgressBlock(_)), &src_block_id)?;
+                        let mut dst_writer = self.writer.write_block(true, &dst_block.id)?;
+                        dst_writer.copy_data(&mut src_writer, src_offset, dest_offset, size)?;
                         return Ok(vec![ChunkRef::InProgressBlock(dst_block.clone())]);
                     },
     
                     // Window source - read from the underlying block
                     ChunkRef::Window(window) => {
                         let actual_src_offset = window.range.offset + src_offset;
-                        let src_writer = self.writer.read_block(false, &window.base.id)?;
-                        let dst_writer = self.writer.write_block(true, &dst_block.id)?;
-                        dst_writer.copy_data(&src_writer, actual_src_offset, dest_offset, size)?;
+                        let mut src_writer = self.writer.read_block(false, &window.base.id)?;
+                        let mut dst_writer = self.writer.write_block(true, &dst_block.id)?;
+                        dst_writer.copy_data(&mut src_writer, actual_src_offset, dest_offset, size)?;
                         return Ok(vec![ChunkRef::InProgressBlock(dst_block.clone())]);
                     },
     
@@ -1219,7 +1099,7 @@ impl RepositoryV1 {
                     },
     
                     ChunkRef::Zero(_) => {
-                        let dst_writer = self.writer.write_block(true, &dst_block.id)?;
+                        let mut dst_writer = self.writer.write_block(true, &dst_block.id)?;
                         dst_writer.write_data_zero_range(dest_offset, size)?;
                         return Ok(vec![ChunkRef::InProgressBlock(dst_block.clone())]);
                     }
@@ -1557,8 +1437,8 @@ impl RepositoryV1 {
                 (Some(ChunkRef::InProgressBlock(in_progress)), ChunkRef::InProgressBlock(in_progress_2)) => {
                     let new_length = in_progress.len + in_progress_2.len as u64;
                     let mut in_progress_block_writer = self.writer.write_block(true, &in_progress.id)?;
-                    let reader = self.writer.read_block(true, &in_progress_2.id)?;
-                    in_progress_block_writer.copy_data(&reader, 0, in_progress.len, in_progress_2.len)?;
+                    let mut reader = self.writer.read_block(true, &in_progress_2.id)?;
+                    in_progress_block_writer.copy_data(&mut reader, 0, in_progress.len, in_progress_2.len)?;
                     in_progress_block_writer.write_header(&BlockChunkHeader { id: in_progress.id, len: new_length })?;
                 },
                 

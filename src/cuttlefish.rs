@@ -58,6 +58,7 @@ const FMODE_EXEC: i32 = 0x20;
 const ENCRYPTION_KEY_LENGTH: usize = 16;
 
 use crate::errors::{ErrorKinds, MyResult};
+use crate::io::fs::FS;
 use crate::repository;
 use crate::crypt;
 use crate::entropy;
@@ -295,19 +296,20 @@ struct SimpleFsState {
 }
 
 
-pub struct SimpleFS {
+pub struct SimpleFS<F:FS> {
     options: SimpleFsOptions,
     state: SimpleFsState,
     encryption_key: [u8;ENCRYPTION_KEY_LENGTH],
-    repository: RepositoryV1,
+    repository: RepositoryV1<F>,
 }
 
-impl SimpleFS {
+impl<F:FS> SimpleFS<F> {
     pub fn new(
+        fs: F,
         options: SimpleFsOptions,
         encryption_key: [u8;ENCRYPTION_KEY_LENGTH],
         data_dir: String,
-    ) -> SimpleFS {
+    ) -> SimpleFS<F> {
 
         let state = {
             let ent = entropy::entropy_from_os();
@@ -323,7 +325,7 @@ impl SimpleFS {
         let repository_options = RepositoryOptions {
             max_inline_content_size: 1024*1024, // 1MB
         };
-        let repository = RepositoryV1::new(data_dir.into(), repository_options);
+        let repository = RepositoryV1::new(fs, data_dir.into(), repository_options);
 
 
         #[cfg(feature = "abi-7-26")]
@@ -537,7 +539,7 @@ impl SimpleFS {
 }
 
 
-impl SimpleFS {
+impl<F:FS> SimpleFS<F> {
     pub fn create_fs(&mut self) -> MyResult<()> {
         self.repository.init()?;
 
@@ -588,7 +590,7 @@ impl SimpleFS {
 //
 // -------------------------------------------------------------------------------------------------------------
 
-impl Filesystem for SimpleFS {
+impl<F:FS> Filesystem for SimpleFS<F> {
     fn init(
         &mut self,
         _req: &Request,
@@ -1108,7 +1110,7 @@ enum ReplyXattrOk {
 type ReplyXattrResult = ReplyResult<ReplyXattrOk>;
 
 
-impl SimpleFS {
+impl<F:FS> SimpleFS<F> {
 
 fn lookup_syn(&mut self, req: &Request, parent: u64, name: &OsStr) -> ReplyEntryResult {
     trace!("lookup() called for parent={} name={:?}", parent, name);
@@ -1712,8 +1714,8 @@ fn setattr_syn(
 
 
         #[cfg(target_os = "linux")]
-        fn handle_exchange_rename(
-            _self: &mut SimpleFS,
+        fn handle_exchange_rename<F:FS>(
+            _self: &mut SimpleFS<F>,
             _req: &Request,
             mut parent_ie: InodeEntry,
             name: &OsStr,
@@ -1722,11 +1724,11 @@ fn setattr_syn(
             mut source_ie: InodeEntry,
             now: (i64, u32)
         ) -> ReplyEmptyResult {
-            let parent_content = SimpleFS::assume_directory_mut(&mut parent_ie.content)?;
-            let new_parent_content = SimpleFS::assume_directory(&new_parent_ie.content)?;
+            let parent_content = SimpleFS::<F>::assume_directory_mut(&mut parent_ie.content)?;
+            let new_parent_content = SimpleFS::<F>::assume_directory(&new_parent_ie.content)?;
             
             // Get target inode entry
-            let (target_ino, target_kind) = *SimpleFS::try_find_directory_entry(new_parent_content, new_name)
+            let (target_ino, target_kind) = *SimpleFS::<F>::try_find_directory_entry(new_parent_content, new_name)
                 .ok_or(libc::ENOENT)?;
             let mut target_ie = _self.repository.get_inode(target_ino)?;
     
@@ -1735,7 +1737,7 @@ fn setattr_syn(
             if parent_ie.attrs.inode != new_parent_ie.attrs.inode {
                 // different inodes
                 let mut new_parent_ie = new_parent_ie;
-                let new_parent_content = SimpleFS::assume_directory_mut(&mut new_parent_ie.content)?;
+                let new_parent_content = SimpleFS::<F>::assume_directory_mut(&mut new_parent_ie.content)?;
                 
                 parent_content.insert(
                     name.as_bytes().to_vec(),
@@ -1748,12 +1750,12 @@ fn setattr_syn(
 
                 // Update ".." entries if directories are involved
                 if source_ie.attrs.kind == FileKind::Directory {
-                    let dir_content = SimpleFS::assume_directory_mut(&mut source_ie.content)?;
+                    let dir_content = SimpleFS::<F>::assume_directory_mut(&mut source_ie.content)?;
                     dir_content.insert(b"..".to_vec(), (new_parent_ie.attrs.inode, FileKind::Directory));
                 }
                 
                 if target_kind == FileKind::Directory {
-                    let dir_content = SimpleFS::assume_directory_mut(&mut target_ie.content)?;
+                    let dir_content = SimpleFS::<F>::assume_directory_mut(&mut target_ie.content)?;
                     dir_content.insert(b"..".to_vec(), (parent_ie.attrs.inode, FileKind::Directory));
                 }
 

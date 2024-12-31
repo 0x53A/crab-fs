@@ -1,6 +1,7 @@
 use std::{io, ops::Deref, sync::PoisonError};
 use libc::c_int;
 use backtrace::Backtrace;
+use remotefs::RemoteError;
 
 // --------------------------------------------------------------
 
@@ -9,7 +10,8 @@ pub enum ErrorKinds {
     IOError(io::Error),
     BincodeError(bincode::ErrorKind),
     PoisonError,
-    C_Int(c_int)
+    C_Int(c_int),
+    RemoteError(RemoteError)
 }
 
 #[derive(Debug)]
@@ -39,6 +41,12 @@ impl From<Box<bincode::ErrorKind>> for MyError {
 impl From<i32> for MyError {
     fn from(c_int: i32) -> Self {
         MyError{err:ErrorKinds::C_Int(c_int), trace: Backtrace::new()}
+    }
+}
+
+impl From<RemoteError> for MyError {
+    fn from(error: RemoteError) -> Self {
+        MyError{err:ErrorKinds::RemoteError(error), trace: Backtrace::new()}
     }
 }
 
@@ -93,6 +101,7 @@ impl Deref for ErrorKinds {
                 }
             }
             ErrorKinds::PoisonError => return &IO_ERROR,
+            ErrorKinds::RemoteError(_e) => return &IO_ERROR,
         }
     }
 }

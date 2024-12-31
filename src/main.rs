@@ -14,6 +14,7 @@ pub mod crypt;
 pub mod entropy;
 pub mod repository;
 pub mod cuttlefish;
+pub mod io;
 mod errors;
 
 use cuttlefish::{SimpleFS, SimpleFsOptions};
@@ -32,6 +33,7 @@ use fuser::{
     FileAttr,
     FUSE_ROOT_ID,
 };
+use io::fs::PhysicalFS;
 #[cfg(feature = "abi-7-26")]
 use log::info;
 use log::{debug, warn};
@@ -50,7 +52,7 @@ use std::os::unix::io::IntoRawFd;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use std::{env, fs, io};
+use std::{env, fs};
 
 use std::collections::HashMap;
 use std::sync::RwLock;
@@ -71,7 +73,7 @@ const ENCRYPTION_KEY_LENGTH: usize = 16;
 // Main
 
 
-fn fuse_allow_other_enabled() -> io::Result<bool> {
+fn fuse_allow_other_enabled() -> std::io::Result<bool> {
     let file = File::open("/etc/fuse.conf")?;
     for line in BufReader::new(file).lines() {
         if line?.trim_start().starts_with("user_allow_other") {
@@ -180,8 +182,8 @@ fn main() {
         let key: [u8;ENCRYPTION_KEY_LENGTH] = base64::decode(key_string).unwrap().try_into().expect("incorrect base64 encryption key length");
     
         let data_dir = init.get_one::<String>("data-dir").unwrap().to_string();
-
-        let mut fs = SimpleFS::new(SimpleFsOptions::default(), key, data_dir);
+        let backing_fs = PhysicalFS { };
+        let mut fs = SimpleFS::new(backing_fs, SimpleFsOptions::default(), key, data_dir);
         match fs.create_fs() {
             Ok(_) => {
                 println!("Successfully created filesystem");
@@ -240,8 +242,10 @@ fn main() {
             ..SimpleFsOptions::default()
         };
 
+        let backing_fs = PhysicalFS { };
         let result = fuser::mount2(
             SimpleFS::new(
+                backing_fs,
                 fs_options,
                 key,
                 data_dir,
