@@ -419,19 +419,19 @@ impl InMemoryFS {
             SeekFrom::End(offset) => {
                 if offset > 0 {
                     file_len + offset as u64
-                } else if offset.abs() as u64 > file_len {
+                } else if offset.unsigned_abs() > file_len {
                     0
                 } else {
-                    file_len - offset.abs() as u64
+                    file_len - offset.unsigned_abs()
                 }
             }
             SeekFrom::Current(offset) => {
                 if offset >= 0 {
                     current_pos + offset as u64
-                } else if offset.abs() as u64 > current_pos {
+                } else if offset.unsigned_abs() > current_pos {
                     0
                 } else {
-                    current_pos - offset.abs() as u64
+                    current_pos - offset.unsigned_abs()
                 }
             }
         };
@@ -688,7 +688,7 @@ impl FS for InMemoryFS {
         let path = &handle_data.path.clone();
 
         // Get file and zero range
-        let mut file = fs_data.get_file_entry_mut(path)?;
+        let file = fs_data.get_file_entry_mut(path)?;
 
         let end_offset = offset + len;
 
