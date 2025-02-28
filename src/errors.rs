@@ -20,6 +20,18 @@ pub struct MyError {
     trace: Backtrace,
 }
 
+impl MyError {
+    pub fn new_io<E>(kind: io::ErrorKind, error: E) -> MyError
+    where
+        E: Into<Box<dyn std::error::Error + Send + Sync>>,
+    {
+        MyError {
+            err: ErrorKinds::IOError(io::Error::new(kind, error)),
+            trace: Backtrace::new(),
+        }
+    }
+}
+
 impl From<io::Error> for MyError {
     fn from(error: io::Error) -> Self {
         MyError {

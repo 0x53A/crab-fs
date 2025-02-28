@@ -1,10 +1,10 @@
 use std::collections::HashMap;
 use std::io::{self, Read, Seek, SeekFrom, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
-use crate::errors::MyResult;
+use crate::errors::{MyError, MyResult};
 use crate::io::fs::{Capabilities, Finalize, Len, SetLen, FS};
 
 type InMemoryPathSegment = Box<[u8]>;
@@ -68,6 +68,8 @@ pub enum Entry {
 
 pub struct InMemoryFsData {
     root: DirectoryEntry,
+    open_handles: HashMap<u32, InMemoryFileHandleData>,
+    next_handle_id: u32,
 }
 
 impl InMemoryFsData {
@@ -109,9 +111,10 @@ impl InMemoryFsData {
         let mut current_dir = &self.root;
 
         for segment in path {
-            current_dir = current_dir.directories.get(segment).ok_or_else(|| {
-                io::Error::new(io::ErrorKind::NotFound, "Directory not found").into()
-            })?;
+            current_dir = current_dir
+                .directories
+                .get(segment)
+                .ok_or_else(|| MyError::new_io(io::ErrorKind::NotFound, "Directory not found"))?;
         }
 
         Ok(current_dir)
@@ -128,9 +131,10 @@ impl InMemoryFsData {
         let mut current_dir = &mut self.root;
 
         for segment in path {
-            current_dir = current_dir.directories.get_mut(segment).ok_or_else(|| {
-                io::Error::new(io::ErrorKind::NotFound, "Directory not found").into()
-            })?;
+            current_dir = current_dir
+                .directories
+                .get_mut(segment)
+                .ok_or_else(|| MyError::new_io(io::ErrorKind::NotFound, "Directory not found"))?;
         }
 
         Ok(current_dir)
@@ -226,9 +230,10 @@ impl InMemoryFsData {
             let from_dir = self.get_directory_entry_mut(from_dir_path)?;
 
             // Remove the file from source
-            from_dir.files.remove(from_file_name).ok_or_else(|| {
-                io::Error::new(io::ErrorKind::NotFound, "Source file not found").into()
-            })?
+            from_dir
+                .files
+                .remove(from_file_name)
+                .ok_or_else(|| MyError::new_io(io::ErrorKind::NotFound, "Source file not found"))?
         };
 
         // Create the destination's parent directories if needed
@@ -260,10 +265,9 @@ pub struct FileHandlePermissions {
     pub write: bool,
 }
 
+#[derive(Clone)]
 pub struct InMemoryFS {
     fs_data: Arc<Mutex<InMemoryFsData>>,
-    open_handles: HashMap<u32, InMemoryFileHandleData>,
-    next_handle_id: u32,
 }
 
 struct InMemoryFileHandleData {
@@ -280,34 +284,26 @@ pub struct InMemoryFileHandle {
 impl InMemoryFS {
     pub fn new() -> Self {
         let root = DirectoryEntry::new();
-        let data = Arc::new(Mutex::new(InMemoryFsData { root }));
-        InMemoryFS {
-            fs_data: data,
+        let fs_data = InMemoryFsData {
+            root,
             open_handles: HashMap::new(),
             next_handle_id: 0,
-        }
-    }
+        };
 
-    fn get_next_handle_id(&mut self) -> u32 {
-        let id = self.next_handle_id;
-        self.next_handle_id += 1;
-        id
-    }
-}
-
-impl Clone for InMemoryFS {
-    fn clone(&self) -> Self {
         InMemoryFS {
-            fs_data: Arc::clone(&self.fs_data),
-            open_handles: HashMap::new(),
-            next_handle_id: 0,
+            fs_data: Arc::new(Mutex::new(fs_data)),
         }
     }
 }
 
 impl InMemoryFS {
     fn read(&mut self, handle_id: u32, buf: &mut [u8]) -> io::Result<usize> {
-        let handle_data = self
+        let mut fs_data = self
+            .fs_data
+            .lock()
+            .map_err(|_| io::Error::new(io::ErrorKind::Other, "Failed to lock filesystem"))?;
+
+        let handle_data = fs_data
             .open_handles
             .get(&handle_id)
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "Invalid handle"))?;
@@ -321,11 +317,6 @@ impl InMemoryFS {
 
         let position = handle_data.position;
         let path = &handle_data.path;
-
-        let mut fs_data = self
-            .fs_data
-            .lock()
-            .map_err(|_| io::Error::new(io::ErrorKind::Other, "Failed to lock filesystem"))?;
 
         let file = fs_data
             .get_file_entry(path)
@@ -345,7 +336,7 @@ impl InMemoryFS {
             buf[..bytes_to_read].copy_from_slice(&file.data[start..end]);
 
             // Update position
-            let handle_data = self.open_handles.get_mut(&handle_id).unwrap();
+            let handle_data = fs_data.open_handles.get_mut(&handle_id).unwrap();
             handle_data.position += bytes_to_read as u64;
         }
 
@@ -353,7 +344,12 @@ impl InMemoryFS {
     }
 
     fn write(&mut self, handle_id: u32, buf: &[u8]) -> io::Result<usize> {
-        let handle_data = self
+        let mut fs_data = self
+            .fs_data
+            .lock()
+            .map_err(|_| io::Error::new(io::ErrorKind::Other, "Failed to lock filesystem"))?;
+
+        let handle_data = fs_data
             .open_handles
             .get(&handle_id)
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "Invalid handle"))?;
@@ -366,12 +362,7 @@ impl InMemoryFS {
         }
 
         let position = handle_data.position;
-        let path = &handle_data.path;
-
-        let mut fs_data = self
-            .fs_data
-            .lock()
-            .map_err(|_| io::Error::new(io::ErrorKind::Other, "Failed to lock filesystem"))?;
+        let path = &handle_data.path.clone();
 
         let file = fs_data
             .get_file_entry_mut(path)
@@ -397,25 +388,25 @@ impl InMemoryFS {
         file.update_modified_time();
 
         // Update position
-        let handle_data = self.open_handles.get_mut(&handle_id).unwrap();
+        let handle_data = fs_data.open_handles.get_mut(&handle_id).unwrap();
         handle_data.position += buf.len() as u64;
 
         Ok(buf.len())
     }
 
     fn seek(&mut self, handle_id: u32, pos: SeekFrom) -> io::Result<u64> {
-        let handle_data = self
+        let mut fs_data = self
+            .fs_data
+            .lock()
+            .map_err(|_| io::Error::new(io::ErrorKind::Other, "Failed to lock filesystem"))?;
+
+        let handle_data = fs_data
             .open_handles
             .get_mut(&handle_id)
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "Invalid handle"))?;
 
-        let path = &handle_data.path;
+        let path = &handle_data.path.clone();
         let current_pos = handle_data.position;
-
-        let fs_data = self
-            .fs_data
-            .lock()
-            .map_err(|_| io::Error::new(io::ErrorKind::Other, "Failed to lock filesystem"))?;
 
         let file = fs_data
             .get_file_entry(path)
@@ -446,30 +437,35 @@ impl InMemoryFS {
         };
 
         // Update position in handle data
+        let handle_data = fs_data
+            .open_handles
+            .get_mut(&handle_id)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "Invalid handle"))?;
         handle_data.position = new_pos;
 
         Ok(new_pos)
     }
 
     fn len(&mut self, handle_id: u32) -> MyResult<u64> {
-        let handle_data = self
+        let fs_data = self.fs_data.lock()?;
+        let handle_data = fs_data
             .open_handles
             .get(&handle_id)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "Invalid handle").into())?;
+            .ok_or_else(|| MyError::new_io(io::ErrorKind::InvalidInput, "Invalid handle"))?;
 
         let path = &handle_data.path;
 
-        let fs_data = self.fs_data.lock()?;
         let file = fs_data.get_file_entry(path)?;
 
         Ok(file.data.len() as u64)
     }
 
     fn set_len(&mut self, handle_id: u32, size: u64) -> MyResult<()> {
-        let handle_data = self
+        let mut fs_data = self.fs_data.lock()?;
+        let handle_data = fs_data
             .open_handles
             .get(&handle_id)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "Invalid handle").into())?;
+            .ok_or_else(|| MyError::new_io(io::ErrorKind::InvalidInput, "Invalid handle"))?;
 
         if !handle_data.permissions.write {
             return Err(io::Error::new(
@@ -479,9 +475,8 @@ impl InMemoryFS {
             .into());
         }
 
-        let path = &handle_data.path;
+        let path = &handle_data.path.clone();
 
-        let mut fs_data = self.fs_data.lock()?;
         let file = fs_data.get_file_entry_mut(path)?;
 
         file.data.resize(size as usize, 0);
@@ -584,116 +579,103 @@ impl FS for InMemoryFS {
 
     fn create<P: AsRef<Path>>(&self, path: P) -> MyResult<Self::File> {
         let segments = path_to_segments(path);
+        let mut fs_data = self.fs_data.lock()?;
 
-        let handle_id = {
-            let mut fs = self.lock()?;
-            let id = fs.get_next_handle_id();
+        // Create the file
+        fs_data.create_file(&segments)?;
 
-            // Create the file
-            let mut fs_data = fs.fs_data.lock()?;
-            fs_data.create_file(&segments)?;
+        // Get next handle ID
+        let handle_id = fs_data.next_handle_id;
+        fs_data.next_handle_id += 1;
 
-            // Create handle data
-            fs.open_handles.insert(
-                id,
-                InMemoryFileHandleData {
-                    path: segments.clone(),
-                    position: 0,
-                    permissions: FileHandlePermissions {
-                        read: true,
-                        write: true,
-                    },
+        // Create handle data
+        fs_data.open_handles.insert(
+            handle_id,
+            InMemoryFileHandleData {
+                path: segments,
+                position: 0,
+                permissions: FileHandlePermissions {
+                    read: true,
+                    write: true,
                 },
-            );
-
-            id
-        };
+            },
+        );
 
         Ok(InMemoryFileHandle {
             id: handle_id,
-            fs: Arc::clone(&self),
+            fs: Arc::new(Mutex::new(self.clone())),
         })
     }
 
     fn open_read<P: AsRef<Path>>(&self, path: P) -> MyResult<Self::File> {
         let segments = path_to_segments(path);
+        let mut fs_data = self.fs_data.lock()?;
 
         // Verify file exists
-        {
-            let fs_data = self.fs_data.lock()?;
-            let _ = fs_data.get_file_entry(&segments)?;
-        }
+        let _ = fs_data.get_file_entry(&segments)?;
 
-        let handle_id = {
-            let mut fs = self.lock()?;
-            let id = fs.get_next_handle_id();
+        // Get next handle ID
+        let handle_id = fs_data.next_handle_id;
+        fs_data.next_handle_id += 1;
 
-            // Create handle data
-            fs.open_handles.insert(
-                id,
-                InMemoryFileHandleData {
-                    path: segments,
-                    position: 0,
-                    permissions: FileHandlePermissions {
-                        read: true,
-                        write: false,
-                    },
+        // Create handle data
+        fs_data.open_handles.insert(
+            handle_id,
+            InMemoryFileHandleData {
+                path: segments,
+                position: 0,
+                permissions: FileHandlePermissions {
+                    read: true,
+                    write: false,
                 },
-            );
-
-            id
-        };
+            },
+        );
 
         Ok(InMemoryFileHandle {
             id: handle_id,
-            fs: Arc::clone(&self),
+            fs: Arc::new(Mutex::new(self.clone())),
         })
     }
 
     fn open_write<P: AsRef<Path>>(&self, path: P) -> MyResult<Self::File> {
         let segments = path_to_segments(path);
+        let mut fs_data = self.fs_data.lock()?;
 
         // Verify file exists
-        {
-            let fs_data = self.fs_data.lock()?;
-            let _ = fs_data.get_file_entry(&segments)?;
-        }
+        let _ = fs_data.get_file_entry(&segments)?;
 
-        let handle_id = {
-            let mut fs = self.lock()?;
-            let id = fs.get_next_handle_id();
+        // Get next handle ID
+        let handle_id = fs_data.next_handle_id;
+        fs_data.next_handle_id += 1;
 
-            // Create handle data
-            fs.open_handles.insert(
-                id,
-                InMemoryFileHandleData {
-                    path: segments,
-                    position: 0,
-                    permissions: FileHandlePermissions {
-                        read: false,
-                        write: true,
-                    },
+        // Create handle data
+        fs_data.open_handles.insert(
+            handle_id,
+            InMemoryFileHandleData {
+                path: segments,
+                position: 0,
+                permissions: FileHandlePermissions {
+                    read: false,
+                    write: true,
                 },
-            );
-
-            id
-        };
+            },
+        );
 
         Ok(InMemoryFileHandle {
             id: handle_id,
-            fs: Arc::clone(&self),
+            fs: Arc::new(Mutex::new(self.clone())),
         })
     }
 
     fn zero_file_range(&self, file: &Self::File, offset: u64, len: u64) -> MyResult<()> {
-        let mut fs = self.lock()?;
+        let mut fs_data = self.fs_data.lock()?;
         let handle_id = file.id;
 
         // Get handle data
-        let handle_data = fs
+        let handle_data = fs_data
             .open_handles
             .get(&handle_id)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "Invalid handle").into())?;
+            .ok_or_else(|| MyError::new_io(io::ErrorKind::InvalidInput, "Invalid handle"))?;
 
         if !handle_data.permissions.write {
             return Err(io::Error::new(
@@ -703,11 +685,10 @@ impl FS for InMemoryFS {
             .into());
         }
 
-        let path = &handle_data.path;
+        let path = &handle_data.path.clone();
 
         // Get file and zero range
-        let mut fs_data = fs.fs_data.lock()?;
-        let file = fs_data.get_file_entry_mut(path)?;
+        let mut file = fs_data.get_file_entry_mut(path)?;
 
         let end_offset = offset + len;
 
@@ -734,12 +715,13 @@ impl FS for InMemoryFS {
         dst_offset: u64,
         len: u64,
     ) -> MyResult<u64> {
-        let mut fs = self.lock()?;
+        let mut fs_data = self.fs_data.lock()?;
 
         // Get source handle data
-        let src_handle_data = fs.open_handles.get(&src_file.id).ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidInput, "Invalid source handle").into()
-        })?;
+        let src_handle_data = fs_data
+            .open_handles
+            .get(&src_file.id)
+            .ok_or_else(|| MyError::new_io(io::ErrorKind::InvalidInput, "Invalid source handle"))?;
 
         if !src_handle_data.permissions.read {
             return Err(io::Error::new(
@@ -750,8 +732,8 @@ impl FS for InMemoryFS {
         }
 
         // Get dest handle data
-        let dst_handle_data = fs.open_handles.get(&dst_file.id).ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidInput, "Invalid destination handle").into()
+        let dst_handle_data = fs_data.open_handles.get(&dst_file.id).ok_or_else(|| {
+            MyError::new_io(io::ErrorKind::InvalidInput, "Invalid destination handle")
         })?;
 
         if !dst_handle_data.permissions.write {
@@ -762,12 +744,10 @@ impl FS for InMemoryFS {
             .into());
         }
 
-        let src_path = &src_handle_data.path;
-        let dst_path = &dst_handle_data.path;
+        let src_path = &src_handle_data.path.clone();
+        let dst_path = &dst_handle_data.path.clone();
 
         // Get files and copy range
-        let mut fs_data = fs.fs_data.lock()?;
-
         let src_file = fs_data.get_file_entry(src_path)?;
         let src_len = src_file.data.len() as u64;
 
@@ -784,7 +764,8 @@ impl FS for InMemoryFS {
         }
 
         // Get the source data
-        let src_data = &src_file.data[src_offset as usize..(src_offset + bytes_to_copy) as usize];
+        let src_data =
+            &src_file.data[src_offset as usize..(src_offset + bytes_to_copy) as usize].to_vec();
 
         // Get destination file
         let dst_file = fs_data.get_file_entry_mut(dst_path)?;
@@ -802,15 +783,6 @@ impl FS for InMemoryFS {
         dst_file.update_modified_time();
 
         Ok(bytes_to_copy)
-    }
-}
-
-// Helper methods not in the FS trait
-impl InMemoryFS {
-    // Helper method to get a mutable reference to self
-    fn lock(&self) -> MyResult<std::sync::MutexGuard<'_, InMemoryFS>> {
-        let this = Arc::new(Mutex::new(self.clone()));
-        this.lock().map_err(From::from)
     }
 }
 
