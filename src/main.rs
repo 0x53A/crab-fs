@@ -21,18 +21,15 @@ use clap::{crate_version, Arg, ArgAction, Command};
 use fuser::consts::FUSE_HANDLE_KILLPRIV;
 // #[cfg(feature = "abi-7-31")]
 // use fuser::consts::FUSE_WRITE_KILL_PRIV;
-use fuser::{
-    Filesystem, MountOption,
-};
+use fuser::{Filesystem, MountOption};
 use io::fs::PhysicalFS;
+use log::debug;
 #[cfg(feature = "abi-7-26")]
 use log::info;
-use log::debug;
 use log::{error, LevelFilter};
+use std::env;
 use std::fs::File;
 use std::io::{BufRead, BufReader, ErrorKind};
-use std::env;
-
 
 use rand::RngCore;
 

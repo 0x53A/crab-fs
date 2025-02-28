@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
 use crate::errors::MyResult;
-use crate::io::fs::{Capabilities, FS, Finalize, Len, SetLen};
+use crate::io::fs::{Capabilities, Finalize, Len, SetLen, FS};
 
 type InMemoryPathSegment = Box<[u8]>;
 type InMemoryPath = [InMemoryPathSegment];
@@ -15,7 +15,12 @@ fn path_to_segments<P: AsRef<Path>>(path: P) -> Vec<InMemoryPathSegment> {
     path.as_ref()
         .components()
         .filter_map(|c| match c {
-            std::path::Component::Normal(s) => Some(s.to_string_lossy().into_owned().into_bytes().into_boxed_slice()),
+            std::path::Component::Normal(s) => Some(
+                s.to_string_lossy()
+                    .into_owned()
+                    .into_bytes()
+                    .into_boxed_slice(),
+            ),
             _ => None,
         })
         .collect()
@@ -24,7 +29,7 @@ fn path_to_segments<P: AsRef<Path>>(path: P) -> Vec<InMemoryPathSegment> {
 pub struct FileEntry {
     pub data: Vec<u8>,
     pub created: SystemTime,
-    pub last_modified: SystemTime
+    pub last_modified: SystemTime,
 }
 
 impl FileEntry {
@@ -44,7 +49,7 @@ impl FileEntry {
 
 pub struct DirectoryEntry {
     files: HashMap<InMemoryPathSegment, FileEntry>,
-    directories: HashMap<InMemoryPathSegment, DirectoryEntry>
+    directories: HashMap<InMemoryPathSegment, DirectoryEntry>,
 }
 
 impl DirectoryEntry {
@@ -58,11 +63,11 @@ impl DirectoryEntry {
 
 pub enum Entry {
     Directory(DirectoryEntry),
-    FileEntry(FileEntry)
+    FileEntry(FileEntry),
 }
 
 pub struct InMemoryFsData {
-    root: DirectoryEntry
+    root: DirectoryEntry,
 }
 
 impl InMemoryFsData {
@@ -75,8 +80,9 @@ impl InMemoryFsData {
         let file_name = &path[path.len() - 1];
 
         let dir = self.get_directory_entry(dir_path)?;
-        
-        dir.files.get(file_name)
+
+        dir.files
+            .get(file_name)
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "File not found").into())
     }
 
@@ -89,8 +95,9 @@ impl InMemoryFsData {
         let file_name = &path[path.len() - 1];
 
         let dir = self.get_directory_entry_mut(dir_path)?;
-        
-        dir.files.get_mut(file_name)
+
+        dir.files
+            .get_mut(file_name)
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "File not found").into())
     }
 
@@ -102,14 +109,18 @@ impl InMemoryFsData {
         let mut current_dir = &self.root;
 
         for segment in path {
-            current_dir = current_dir.directories.get(segment)
-                .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Directory not found").into())?;
+            current_dir = current_dir.directories.get(segment).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::NotFound, "Directory not found").into()
+            })?;
         }
 
         Ok(current_dir)
     }
 
-    fn get_directory_entry_mut(&mut self, path: &[InMemoryPathSegment]) -> MyResult<&mut DirectoryEntry> {
+    fn get_directory_entry_mut(
+        &mut self,
+        path: &[InMemoryPathSegment],
+    ) -> MyResult<&mut DirectoryEntry> {
         if path.is_empty() {
             return Ok(&mut self.root);
         }
@@ -117,8 +128,9 @@ impl InMemoryFsData {
         let mut current_dir = &mut self.root;
 
         for segment in path {
-            current_dir = current_dir.directories.get_mut(segment)
-                .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Directory not found").into())?;
+            current_dir = current_dir.directories.get_mut(segment).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::NotFound, "Directory not found").into()
+            })?;
         }
 
         Ok(current_dir)
@@ -133,18 +145,23 @@ impl InMemoryFsData {
         let mut current_dir = &mut self.root;
 
         for segment in path {
-            current_dir = current_dir.directories
+            current_dir = current_dir
+                .directories
                 .entry(segment.clone())
                 .or_insert_with(DirectoryEntry::new);
         }
 
         Ok(())
     }
-    
+
     // Create a file, also creating parent directories if needed
     fn create_file(&mut self, path: &[InMemoryPathSegment]) -> MyResult<&mut FileEntry> {
         if path.is_empty() {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "Cannot create file with empty path").into());
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Cannot create file with empty path",
+            )
+            .into());
         }
 
         let dir_path = &path[0..path.len() - 1];
@@ -152,77 +169,95 @@ impl InMemoryFsData {
 
         // Create parent directories
         self.create_directories(dir_path)?;
-        
+
         // Get the parent directory
         let dir = self.get_directory_entry_mut(dir_path)?;
-        
+
         // Create the file if it doesn't exist
-        let file_entry = dir.files
+        let file_entry = dir
+            .files
             .entry(file_name.clone())
             .or_insert_with(FileEntry::new);
-            
+
         Ok(file_entry)
     }
-    
+
     // Delete a file, failing if it doesn't exist
     fn delete_file(&mut self, path: &[InMemoryPathSegment]) -> MyResult<()> {
         if path.is_empty() {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "Cannot delete file with empty path").into());
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Cannot delete file with empty path",
+            )
+            .into());
         }
 
         let dir_path = &path[0..path.len() - 1];
         let file_name = &path[path.len() - 1];
 
         let dir = self.get_directory_entry_mut(dir_path)?;
-        
+
         if dir.files.remove(file_name).is_none() {
             return Err(io::Error::new(io::ErrorKind::NotFound, "File not found").into());
         }
-        
+
         Ok(())
     }
-    
+
     // Rename a file from one path to another
-    fn rename_file(&mut self, from_path: &[InMemoryPathSegment], to_path: &[InMemoryPathSegment]) -> MyResult<()> {
+    fn rename_file(
+        &mut self,
+        from_path: &[InMemoryPathSegment],
+        to_path: &[InMemoryPathSegment],
+    ) -> MyResult<()> {
         if from_path.is_empty() || to_path.is_empty() {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "Cannot rename with empty path").into());
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Cannot rename with empty path",
+            )
+            .into());
         }
-        
+
         // Extract the file entry from the source
         let file_entry = {
             let from_dir_path = &from_path[0..from_path.len() - 1];
             let from_file_name = &from_path[from_path.len() - 1];
-            
+
             let from_dir = self.get_directory_entry_mut(from_dir_path)?;
-            
+
             // Remove the file from source
-            from_dir.files.remove(from_file_name)
-                .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Source file not found").into())?
+            from_dir.files.remove(from_file_name).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::NotFound, "Source file not found").into()
+            })?
         };
-        
+
         // Create the destination's parent directories if needed
         let to_dir_path = &to_path[0..to_path.len() - 1];
         let to_file_name = &to_path[to_path.len() - 1];
-        
+
         self.create_directories(to_dir_path)?;
-        
+
         // Get the destination directory and insert the file
         let to_dir = self.get_directory_entry_mut(to_dir_path)?;
-        
+
         // Check if destination already exists
         if to_dir.files.contains_key(to_file_name) {
-            return Err(io::Error::new(io::ErrorKind::AlreadyExists, "Destination file already exists").into());
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "Destination file already exists",
+            )
+            .into());
         }
-        
+
         to_dir.files.insert(to_file_name.clone(), file_entry);
-        
+
         Ok(())
     }
 }
 
 pub struct FileHandlePermissions {
     pub read: bool,
-    pub write: bool
+    pub write: bool,
 }
 
 pub struct InMemoryFS {
@@ -234,25 +269,25 @@ pub struct InMemoryFS {
 struct InMemoryFileHandleData {
     path: Vec<InMemoryPathSegment>,
     position: u64,
-    permissions: FileHandlePermissions
+    permissions: FileHandlePermissions,
 }
 
 pub struct InMemoryFileHandle {
     id: u32,
-    fs: Arc<Mutex<InMemoryFS>>
+    fs: Arc<Mutex<InMemoryFS>>,
 }
 
 impl InMemoryFS {
     pub fn new() -> Self {
         let root = DirectoryEntry::new();
         let data = Arc::new(Mutex::new(InMemoryFsData { root }));
-        InMemoryFS { 
-            fs_data: data, 
+        InMemoryFS {
+            fs_data: data,
             open_handles: HashMap::new(),
             next_handle_id: 0,
         }
     }
-    
+
     fn get_next_handle_id(&mut self) -> u32 {
         let id = self.next_handle_id;
         self.next_handle_id += 1;
@@ -272,101 +307,122 @@ impl Clone for InMemoryFS {
 
 impl InMemoryFS {
     fn read(&mut self, handle_id: u32, buf: &mut [u8]) -> io::Result<usize> {
-        let handle_data = self.open_handles.get(&handle_id)
+        let handle_data = self
+            .open_handles
+            .get(&handle_id)
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "Invalid handle"))?;
-            
+
         if !handle_data.permissions.read {
-            return Err(io::Error::new(io::ErrorKind::PermissionDenied, "File not opened for reading"));
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "File not opened for reading",
+            ));
         }
-        
+
         let position = handle_data.position;
         let path = &handle_data.path;
-        
-        let mut fs_data = self.fs_data.lock()
+
+        let mut fs_data = self
+            .fs_data
+            .lock()
             .map_err(|_| io::Error::new(io::ErrorKind::Other, "Failed to lock filesystem"))?;
-            
-        let file = fs_data.get_file_entry(path)
+
+        let file = fs_data
+            .get_file_entry(path)
             .map_err(|_| io::Error::new(io::ErrorKind::NotFound, "File not found"))?;
-            
+
         let available = if position >= file.data.len() as u64 {
             0
         } else {
             file.data.len() as u64 - position
         };
-        
+
         let bytes_to_read = std::cmp::min(available as usize, buf.len());
-        
+
         if bytes_to_read > 0 {
             let start = position as usize;
             let end = start + bytes_to_read;
             buf[..bytes_to_read].copy_from_slice(&file.data[start..end]);
-            
+
             // Update position
             let handle_data = self.open_handles.get_mut(&handle_id).unwrap();
             handle_data.position += bytes_to_read as u64;
         }
-        
+
         Ok(bytes_to_read)
     }
-    
+
     fn write(&mut self, handle_id: u32, buf: &[u8]) -> io::Result<usize> {
-        let handle_data = self.open_handles.get(&handle_id)
+        let handle_data = self
+            .open_handles
+            .get(&handle_id)
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "Invalid handle"))?;
-            
+
         if !handle_data.permissions.write {
-            return Err(io::Error::new(io::ErrorKind::PermissionDenied, "File not opened for writing"));
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "File not opened for writing",
+            ));
         }
-        
+
         let position = handle_data.position;
         let path = &handle_data.path;
-        
-        let mut fs_data = self.fs_data.lock()
+
+        let mut fs_data = self
+            .fs_data
+            .lock()
             .map_err(|_| io::Error::new(io::ErrorKind::Other, "Failed to lock filesystem"))?;
-            
-        let file = fs_data.get_file_entry_mut(path)
+
+        let file = fs_data
+            .get_file_entry_mut(path)
             .map_err(|_| io::Error::new(io::ErrorKind::NotFound, "File not found"))?;
-            
+
         // Ensure file size is adequate
         if position > file.data.len() as u64 {
             file.data.resize(position as usize, 0);
         }
-        
+
         let start = position as usize;
         let end = start + buf.len();
-        
+
         // If writing past end of file, resize it
         if end > file.data.len() {
             file.data.resize(end, 0);
         }
-        
+
         // Write the data
         file.data[start..end].copy_from_slice(buf);
-        
+
         // Update modified time
         file.update_modified_time();
-        
+
         // Update position
         let handle_data = self.open_handles.get_mut(&handle_id).unwrap();
         handle_data.position += buf.len() as u64;
-        
+
         Ok(buf.len())
     }
-    
+
     fn seek(&mut self, handle_id: u32, pos: SeekFrom) -> io::Result<u64> {
-        let handle_data = self.open_handles.get_mut(&handle_id)
+        let handle_data = self
+            .open_handles
+            .get_mut(&handle_id)
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "Invalid handle"))?;
-        
+
         let path = &handle_data.path;
         let current_pos = handle_data.position;
-        
-        let fs_data = self.fs_data.lock()
+
+        let fs_data = self
+            .fs_data
+            .lock()
             .map_err(|_| io::Error::new(io::ErrorKind::Other, "Failed to lock filesystem"))?;
-            
-        let file = fs_data.get_file_entry(path)
+
+        let file = fs_data
+            .get_file_entry(path)
             .map_err(|_| io::Error::new(io::ErrorKind::NotFound, "File not found"))?;
-            
+
         let file_len = file.data.len() as u64;
-        
+
         let new_pos = match pos {
             SeekFrom::Start(offset) => offset,
             SeekFrom::End(offset) => {
@@ -377,7 +433,7 @@ impl InMemoryFS {
                 } else {
                     file_len - offset.abs() as u64
                 }
-            },
+            }
             SeekFrom::Current(offset) => {
                 if offset >= 0 {
                     current_pos + offset as u64
@@ -388,59 +444,71 @@ impl InMemoryFS {
                 }
             }
         };
-        
+
         // Update position in handle data
         handle_data.position = new_pos;
-        
+
         Ok(new_pos)
     }
-    
+
     fn len(&mut self, handle_id: u32) -> MyResult<u64> {
-        let handle_data = self.open_handles.get(&handle_id)
+        let handle_data = self
+            .open_handles
+            .get(&handle_id)
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "Invalid handle").into())?;
-            
+
         let path = &handle_data.path;
-        
+
         let fs_data = self.fs_data.lock()?;
         let file = fs_data.get_file_entry(path)?;
-        
+
         Ok(file.data.len() as u64)
     }
-    
+
     fn set_len(&mut self, handle_id: u32, size: u64) -> MyResult<()> {
-        let handle_data = self.open_handles.get(&handle_id)
+        let handle_data = self
+            .open_handles
+            .get(&handle_id)
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "Invalid handle").into())?;
-            
+
         if !handle_data.permissions.write {
-            return Err(io::Error::new(io::ErrorKind::PermissionDenied, "File not opened for writing").into());
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "File not opened for writing",
+            )
+            .into());
         }
-        
+
         let path = &handle_data.path;
-        
+
         let mut fs_data = self.fs_data.lock()?;
         let file = fs_data.get_file_entry_mut(path)?;
-        
+
         file.data.resize(size as usize, 0);
         file.update_modified_time();
-        
+
         Ok(())
     }
 }
 
 impl Read for InMemoryFileHandle {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let mut fs = self.fs.lock()
+        let mut fs = self
+            .fs
+            .lock()
             .map_err(|_| io::Error::new(io::ErrorKind::Other, "Failed to lock filesystem"))?;
-        
+
         fs.read(self.id, buf)
     }
 }
 
 impl Write for InMemoryFileHandle {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        let mut fs = self.fs.lock()
+        let mut fs = self
+            .fs
+            .lock()
             .map_err(|_| io::Error::new(io::ErrorKind::Other, "Failed to lock filesystem"))?;
-        
+
         fs.write(self.id, buf)
     }
 
@@ -452,9 +520,11 @@ impl Write for InMemoryFileHandle {
 
 impl Seek for InMemoryFileHandle {
     fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
-        let mut fs = self.fs.lock()
+        let mut fs = self
+            .fs
+            .lock()
             .map_err(|_| io::Error::new(io::ErrorKind::Other, "Failed to lock filesystem"))?;
-        
+
         fs.seek(self.id, pos)
     }
 }
@@ -481,10 +551,18 @@ impl Finalize for InMemoryFileHandle {
 }
 
 impl Capabilities for InMemoryFS {
-    fn can_mutate(&self) -> bool { true }
-    fn can_truncate(&self) -> bool { true }
-    fn can_rename(&self) -> bool { true }
-    fn can_append(&self) -> bool { true }
+    fn can_mutate(&self) -> bool {
+        true
+    }
+    fn can_truncate(&self) -> bool {
+        true
+    }
+    fn can_rename(&self) -> bool {
+        true
+    }
+    fn can_append(&self) -> bool {
+        true
+    }
 }
 
 impl FS for InMemoryFS {
@@ -499,32 +577,38 @@ impl FS for InMemoryFS {
     fn rename<P: AsRef<Path>, Q: AsRef<Path>>(&self, from: P, to: Q) -> MyResult<()> {
         let from_segments = path_to_segments(from);
         let to_segments = path_to_segments(to);
-        
+
         let mut fs_data = self.fs_data.lock()?;
         fs_data.rename_file(&from_segments, &to_segments)
     }
 
     fn create<P: AsRef<Path>>(&self, path: P) -> MyResult<Self::File> {
         let segments = path_to_segments(path);
-        
+
         let handle_id = {
             let mut fs = self.lock()?;
             let id = fs.get_next_handle_id();
-            
+
             // Create the file
             let mut fs_data = fs.fs_data.lock()?;
             fs_data.create_file(&segments)?;
-            
+
             // Create handle data
-            fs.open_handles.insert(id, InMemoryFileHandleData {
-                path: segments.clone(),
-                position: 0,
-                permissions: FileHandlePermissions { read: true, write: true },
-            });
-            
+            fs.open_handles.insert(
+                id,
+                InMemoryFileHandleData {
+                    path: segments.clone(),
+                    position: 0,
+                    permissions: FileHandlePermissions {
+                        read: true,
+                        write: true,
+                    },
+                },
+            );
+
             id
         };
-        
+
         Ok(InMemoryFileHandle {
             id: handle_id,
             fs: Arc::clone(&self),
@@ -533,27 +617,33 @@ impl FS for InMemoryFS {
 
     fn open_read<P: AsRef<Path>>(&self, path: P) -> MyResult<Self::File> {
         let segments = path_to_segments(path);
-        
+
         // Verify file exists
         {
             let fs_data = self.fs_data.lock()?;
             let _ = fs_data.get_file_entry(&segments)?;
         }
-        
+
         let handle_id = {
             let mut fs = self.lock()?;
             let id = fs.get_next_handle_id();
-            
+
             // Create handle data
-            fs.open_handles.insert(id, InMemoryFileHandleData {
-                path: segments,
-                position: 0,
-                permissions: FileHandlePermissions { read: true, write: false },
-            });
-            
+            fs.open_handles.insert(
+                id,
+                InMemoryFileHandleData {
+                    path: segments,
+                    position: 0,
+                    permissions: FileHandlePermissions {
+                        read: true,
+                        write: false,
+                    },
+                },
+            );
+
             id
         };
-        
+
         Ok(InMemoryFileHandle {
             id: handle_id,
             fs: Arc::clone(&self),
@@ -562,27 +652,33 @@ impl FS for InMemoryFS {
 
     fn open_write<P: AsRef<Path>>(&self, path: P) -> MyResult<Self::File> {
         let segments = path_to_segments(path);
-        
+
         // Verify file exists
         {
             let fs_data = self.fs_data.lock()?;
             let _ = fs_data.get_file_entry(&segments)?;
         }
-        
+
         let handle_id = {
             let mut fs = self.lock()?;
             let id = fs.get_next_handle_id();
-            
+
             // Create handle data
-            fs.open_handles.insert(id, InMemoryFileHandleData {
-                path: segments,
-                position: 0,
-                permissions: FileHandlePermissions { read: false, write: true },
-            });
-            
+            fs.open_handles.insert(
+                id,
+                InMemoryFileHandleData {
+                    path: segments,
+                    position: 0,
+                    permissions: FileHandlePermissions {
+                        read: false,
+                        write: true,
+                    },
+                },
+            );
+
             id
         };
-        
+
         Ok(InMemoryFileHandle {
             id: handle_id,
             fs: Arc::clone(&self),
@@ -592,35 +688,41 @@ impl FS for InMemoryFS {
     fn zero_file_range(&self, file: &Self::File, offset: u64, len: u64) -> MyResult<()> {
         let mut fs = self.lock()?;
         let handle_id = file.id;
-        
+
         // Get handle data
-        let handle_data = fs.open_handles.get(&handle_id)
+        let handle_data = fs
+            .open_handles
+            .get(&handle_id)
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "Invalid handle").into())?;
-            
+
         if !handle_data.permissions.write {
-            return Err(io::Error::new(io::ErrorKind::PermissionDenied, "File not opened for writing").into());
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "File not opened for writing",
+            )
+            .into());
         }
-        
+
         let path = &handle_data.path;
-        
+
         // Get file and zero range
         let mut fs_data = fs.fs_data.lock()?;
         let file = fs_data.get_file_entry_mut(path)?;
-        
+
         let end_offset = offset + len;
-        
+
         // Ensure file is large enough
         if file.data.len() < end_offset as usize {
             file.data.resize(end_offset as usize, 0);
         }
-        
+
         // Zero the range
         for i in offset..end_offset {
             file.data[i as usize] = 0;
         }
-        
+
         file.update_modified_time();
-        
+
         Ok(())
     }
 
@@ -633,62 +735,72 @@ impl FS for InMemoryFS {
         len: u64,
     ) -> MyResult<u64> {
         let mut fs = self.lock()?;
-        
+
         // Get source handle data
-        let src_handle_data = fs.open_handles.get(&src_file.id)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "Invalid source handle").into())?;
-            
+        let src_handle_data = fs.open_handles.get(&src_file.id).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "Invalid source handle").into()
+        })?;
+
         if !src_handle_data.permissions.read {
-            return Err(io::Error::new(io::ErrorKind::PermissionDenied, "Source file not opened for reading").into());
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "Source file not opened for reading",
+            )
+            .into());
         }
-        
+
         // Get dest handle data
-        let dst_handle_data = fs.open_handles.get(&dst_file.id)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "Invalid destination handle").into())?;
-            
+        let dst_handle_data = fs.open_handles.get(&dst_file.id).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "Invalid destination handle").into()
+        })?;
+
         if !dst_handle_data.permissions.write {
-            return Err(io::Error::new(io::ErrorKind::PermissionDenied, "Destination file not opened for writing").into());
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "Destination file not opened for writing",
+            )
+            .into());
         }
-        
+
         let src_path = &src_handle_data.path;
         let dst_path = &dst_handle_data.path;
-        
+
         // Get files and copy range
         let mut fs_data = fs.fs_data.lock()?;
-        
+
         let src_file = fs_data.get_file_entry(src_path)?;
         let src_len = src_file.data.len() as u64;
-        
+
         // Calculate how much we can copy
         if src_offset >= src_len {
             return Ok(0); // Source offset is past EOF
         }
-        
+
         let available = src_len - src_offset;
         let bytes_to_copy = std::cmp::min(available, len);
-        
+
         if bytes_to_copy == 0 {
             return Ok(0);
         }
-        
+
         // Get the source data
         let src_data = &src_file.data[src_offset as usize..(src_offset + bytes_to_copy) as usize];
-        
+
         // Get destination file
         let dst_file = fs_data.get_file_entry_mut(dst_path)?;
-        
+
         // Ensure destination file is large enough
         let dst_end = dst_offset + bytes_to_copy;
         if dst_file.data.len() < dst_end as usize {
             dst_file.data.resize(dst_end as usize, 0);
         }
-        
+
         // Copy the data
         dst_file.data[dst_offset as usize..(dst_offset + bytes_to_copy) as usize]
             .copy_from_slice(src_data);
-            
+
         dst_file.update_modified_time();
-        
+
         Ok(bytes_to_copy)
     }
 }
@@ -705,12 +817,12 @@ impl InMemoryFS {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::{Read, Write, Seek};
+    use std::io::{Read, Seek, Write};
 
     #[test]
     fn test_create_and_read_file() -> MyResult<()> {
         let fs = InMemoryFS::new();
-        
+
         // Create and write to a file
         let mut file = fs.create("test.txt")?;
         file.write_all(b"Hello, World!")?;
@@ -720,7 +832,7 @@ mod tests {
         let mut file = fs.open_read("test.txt")?;
         let mut contents = String::new();
         file.read_to_string(&mut contents)?;
-        
+
         assert_eq!(contents, "Hello, World!");
         Ok(())
     }
@@ -728,7 +840,7 @@ mod tests {
     #[test]
     fn test_seek_and_partial_read() -> MyResult<()> {
         let fs = InMemoryFS::new();
-        
+
         // Create test data
         let mut file = fs.create("seek_test.txt")?;
         file.write_all(b"0123456789")?;
@@ -737,10 +849,10 @@ mod tests {
         // Test seeking and partial reading
         let mut file = fs.open_read("seek_test.txt")?;
         file.seek(SeekFrom::Start(5))?;
-        
+
         let mut buffer = [0u8; 3];
         file.read_exact(&mut buffer)?;
-        
+
         assert_eq!(&buffer, b"567");
         Ok(())
     }
@@ -748,10 +860,10 @@ mod tests {
     #[test]
     fn test_create_directory_structure() -> MyResult<()> {
         let fs = InMemoryFS::new();
-        
+
         // Create nested directories
         fs.create_dir_all("a/b/c")?;
-        
+
         // Create a file in the nested directory
         let mut file = fs.create("a/b/c/test.txt")?;
         file.write_all(b"test content")?;
@@ -761,7 +873,7 @@ mod tests {
         let mut file = fs.open_read("a/b/c/test.txt")?;
         let mut contents = String::new();
         file.read_to_string(&mut contents)?;
-        
+
         assert_eq!(contents, "test content");
         Ok(())
     }
@@ -769,28 +881,28 @@ mod tests {
     #[test]
     fn test_file_length() -> MyResult<()> {
         let fs = InMemoryFS::new();
-        
+
         // Create a file with known content
         let mut file = fs.create("length_test.txt")?;
         file.write_all(b"12345")?;
-        
+
         assert_eq!(file.len()?, 5);
-        
+
         // Extend the file
         file.set_len(10)?;
         assert_eq!(file.len()?, 10);
-        
+
         // Truncate the file
         file.set_len(3)?;
         assert_eq!(file.len()?, 3);
-        
+
         Ok(())
     }
 
     #[test]
     fn test_rename_file() -> MyResult<()> {
         let fs = InMemoryFS::new();
-        
+
         // Create and write to a file
         let mut file = fs.create("old.txt")?;
         file.write_all(b"content")?;
@@ -806,7 +918,7 @@ mod tests {
         let mut file = fs.open_read("new.txt")?;
         let mut contents = String::new();
         file.read_to_string(&mut contents)?;
-        
+
         assert_eq!(contents, "content");
         Ok(())
     }
@@ -814,46 +926,46 @@ mod tests {
     #[test]
     fn test_zero_file_range() -> MyResult<()> {
         let fs = InMemoryFS::new();
-        
+
         // Create a file with known content
         let mut file = fs.create("zero_test.txt")?;
         file.write_all(b"Hello World!")?;
-        
+
         // Zero out "World"
         fs.zero_file_range(&file, 6, 5)?;
-        
+
         // Read the content back
         let mut file = fs.open_read("zero_test.txt")?;
         let mut contents = vec![0u8; 12];
         file.read_exact(&mut contents)?;
-        
+
         assert_eq!(&contents[0..6], b"Hello ");
         assert_eq!(&contents[6..11], &[0, 0, 0, 0, 0]);
         assert_eq!(contents[11], b'!');
-        
+
         Ok(())
     }
 
     #[test]
     fn test_copy_file_range() -> MyResult<()> {
         let fs = InMemoryFS::new();
-        
+
         // Create source file
         let mut src_file = fs.create("source.txt")?;
         src_file.write_all(b"Hello World!")?;
-        
+
         // Create destination file
         let mut dst_file = fs.create("dest.txt")?;
         dst_file.write_all(b"XXXXXXXXXXXXX")?;
-        
+
         // Copy "World" from source to destination
         fs.copy_file_range(&src_file, 6, &dst_file, 3, 5)?;
-        
+
         // Read destination content
         let mut file = fs.open_read("dest.txt")?;
         let mut contents = String::new();
         file.read_to_string(&mut contents)?;
-        
+
         assert_eq!(contents, "XXXWorldXXXXX");
         Ok(())
     }
@@ -861,7 +973,7 @@ mod tests {
     #[test]
     fn test_concurrent_access() -> MyResult<()> {
         use std::thread;
-        
+
         let fs = InMemoryFS::new();
         let fs_clone = fs.clone();
 
@@ -885,7 +997,7 @@ mod tests {
         let mut file = fs.open_read("concurrent.txt")?;
         let mut contents = String::new();
         file.read_to_string(&mut contents)?;
-        
+
         assert_eq!(contents, "Initial Content");
         Ok(())
     }
@@ -893,7 +1005,7 @@ mod tests {
     #[test]
     fn test_capabilities() {
         let fs = InMemoryFS::new();
-        
+
         assert!(fs.can_mutate());
         assert!(fs.can_truncate());
         assert!(fs.can_rename());
@@ -903,19 +1015,19 @@ mod tests {
     #[test]
     fn test_large_file() -> MyResult<()> {
         let fs = InMemoryFS::new();
-        
+
         // Create a large file (1MB)
         let mut file = fs.create("large.txt")?;
         let data = vec![b'X'; 1_000_000];
         file.write_all(&data)?;
-        
+
         assert_eq!(file.len()?, 1_000_000);
-        
+
         // Read back in chunks
         let mut file = fs.open_read("large.txt")?;
         let mut buffer = vec![0u8; 1024];
         let mut total_read = 0;
-        
+
         loop {
             match file.read(&mut buffer)? {
                 0 => break,
@@ -925,7 +1037,7 @@ mod tests {
                 }
             }
         }
-        
+
         assert_eq!(total_read, 1_000_000);
         Ok(())
     }
@@ -933,13 +1045,13 @@ mod tests {
     #[test]
     fn test_error_cases() {
         let fs = InMemoryFS::new();
-        
+
         // Try to read non-existent file
         assert!(fs.open_read("nonexistent.txt").is_err());
-        
+
         // Try to rename non-existent file
         assert!(fs.rename("nonexistent.txt", "new.txt").is_err());
-        
+
         // Try to create file in non-existent directory
         assert!(fs.create("nonexistent_dir/file.txt").is_err());
     }

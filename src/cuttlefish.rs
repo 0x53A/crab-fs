@@ -5,7 +5,6 @@
 #![allow(clippy::needless_return)]
 #![allow(clippy::unnecessary_cast)] // libc::S_* are u16 or u32 depending on the platform
 
-
 use fuser::consts::FOPEN_DIRECT_IO;
 #[cfg(feature = "abi-7-26")]
 use fuser::consts::FUSE_HANDLE_KILLPRIV;
@@ -13,9 +12,9 @@ use fuser::consts::FUSE_HANDLE_KILLPRIV;
 // use fuser::consts::FUSE_WRITE_KILL_PRIV;
 use fuser::TimeOrNow::Now;
 use fuser::{
-    FileAttr, Filesystem, KernelConfig, ReplyAttr, ReplyCreate, ReplyData,
-    ReplyDirectory, ReplyEmpty, ReplyEntry, ReplyOpen, ReplyStatfs, ReplyWrite, ReplyXattr,
-    Request, TimeOrNow, FUSE_ROOT_ID,
+    FileAttr, Filesystem, KernelConfig, ReplyAttr, ReplyCreate, ReplyData, ReplyDirectory,
+    ReplyEmpty, ReplyEntry, ReplyOpen, ReplyStatfs, ReplyWrite, ReplyXattr, Request, TimeOrNow,
+    FUSE_ROOT_ID,
 };
 #[cfg(feature = "abi-7-26")]
 use log::info;
@@ -35,7 +34,6 @@ use std::collections::HashMap;
 use std::sync::RwLock;
 
 use rand::RngCore;
-
 
 const BLOCK_SIZE: u64 = 512;
 const MAX_NAME_LENGTH: u32 = 10_000;
@@ -472,9 +470,7 @@ impl<F: FS> SimpleFS<F> {
         };
     }
     #[must_use]
-    fn assume_directory_mut(
-        content: &mut InodeContent,
-    ) -> Result<&mut DirectoryDescriptor, c_int> {
+    fn assume_directory_mut(content: &mut InodeContent) -> Result<&mut DirectoryDescriptor, c_int> {
         match content {
             InodeContent::File(_) | InodeContent::Symlink(_) => {
                 return Err(libc::ENOTDIR);
@@ -2354,13 +2350,9 @@ impl<F: FS> SimpleFS<F> {
         // Could underflow if file length is less than local_start
         let read_size = min(size, src_ie.attrs.size.saturating_sub(src_offset));
 
-        let updated_dest_content = self.repository.copy_range(
-            src_content,
-            dest_content,
-            src_offset,
-            dest_offset,
-            size,
-        )?;
+        let updated_dest_content =
+            self.repository
+                .copy_range(src_content, dest_content, src_offset, dest_offset, size)?;
         dest_ie.attrs.size = updated_dest_content.len() as u64;
         dest_ie.attrs.last_metadata_changed = time_now();
         dest_ie.attrs.last_modified = time_now();
