@@ -1,7 +1,7 @@
 // Thanks, Claude!
 
 use num_traits::{PrimInt, WrappingAdd};
-use std::ops::{BitOr, BitXor, Shl, Shr};
+use std::ops::BitXor;
 
 /// A generic implementation of a Feistel network that works with different integer types
 pub struct FeistelNetwork<T, U>

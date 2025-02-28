@@ -5,30 +5,17 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 //---------------------
-use log::{debug, warn};
-use log::{error, LevelFilter};
-use std::cmp::min;
-use std::ffi::OsStr;
-use std::fs::OpenOptions;
-use std::io::{self, BufRead, BufReader, ErrorKind, Read, Seek, SeekFrom, Write};
-use std::os::raw::c_int;
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::FileExt;
-#[cfg(target_os = "linux")]
-use std::os::unix::io::IntoRawFd;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use std::collections::HashMap;
 use std::sync::RwLock;
 
 use rand::{RngCore, SeedableRng};
 //-------------------
 
-use blake3::Hasher;
 
-use crate::errors::{ErrorKinds, MyResult};
+use crate::errors::MyResult;
 use crate::io::fs::{Len, SetLen, FS};
 // use bincode_maxsize_derive::BincodeMaxSize;
 
@@ -213,7 +200,7 @@ impl Default for FileContent {
 impl FileContent {
     pub const EMPTY: FileContent = FileContent::Chunks(vec![]);
 
-    pub fn chunks<'a>(&'a self) -> &'a Vec<ChunkRef> {
+    pub fn chunks(&self) -> &Vec<ChunkRef> {
         let FileContent::Chunks(chunks) = self;
         chunks
     }
@@ -737,11 +724,7 @@ impl<F: FS> RepositoryV1<F> {
             }
 
             // Calculate where to start reading in this chunk
-            let chunk_offset = if file_offset < offset {
-                offset - file_offset
-            } else {
-                0
-            };
+            let chunk_offset = offset.saturating_sub(file_offset);
 
             // Calculate how many bytes we can read from this chunk
             let available_in_chunk = chunk_len - chunk_offset;
@@ -788,11 +771,7 @@ impl<F: FS> RepositoryV1<F> {
 
         // Calculate the parts we need to keep from original chunk
         let keep_at_beginning = if offset > 0 { offset } else { 0 };
-        let keep_at_tail = if write_end_excl < chunk_len {
-            chunk_len - write_end_excl
-        } else {
-            0
-        };
+        let keep_at_tail = chunk_len.saturating_sub(write_end_excl);
         let size_to_write = buffer.len() as u64;
 
         match chunk {
@@ -904,21 +883,9 @@ impl<F: FS> RepositoryV1<F> {
             }
 
             // Calculate overlap
-            let keep_at_beginning = if offset > chunk_begin {
-                offset - chunk_begin
-            } else {
-                0
-            };
-            let keep_at_tail = if write_end_excl < chunk_end_excl {
-                chunk_end_excl - write_end_excl
-            } else {
-                0
-            };
-            let write_offset_in_buffer = if chunk_begin > offset {
-                chunk_begin - offset
-            } else {
-                0
-            };
+            let keep_at_beginning = offset.saturating_sub(chunk_begin);
+            let keep_at_tail = chunk_end_excl.saturating_sub(write_end_excl);
+            let write_offset_in_buffer = chunk_begin.saturating_sub(offset);
             let size_to_write = chunk_len - keep_at_beginning - keep_at_tail;
 
             match chunk {
@@ -1098,7 +1065,7 @@ impl<F: FS> RepositoryV1<F> {
                     }) => {
                         let mut src_writer = self.writer.read_block(
                             matches!(from, ChunkRef::InProgressBlock(_)),
-                            &src_block_id,
+                            src_block_id,
                         )?;
                         let mut dst_writer = self.writer.write_block(true, &dst_block.id)?;
                         dst_writer.copy_data(&mut src_writer, src_offset, dest_offset, size)?;
@@ -1459,16 +1426,8 @@ impl<F: FS> RepositoryV1<F> {
             }
 
             // we have a partial overlap. As drawn at the beginning, there are three cases, range overlaps the beginning, range overlaps the middle, range overlaps the end
-            let keep_at_beginning = if offset > chunk_begin {
-                offset - chunk_begin
-            } else {
-                0
-            };
-            let keep_at_tail = if range_end_excl < chunk_end_excl {
-                chunk_end_excl - range_end_excl
-            } else {
-                0
-            };
+            let keep_at_beginning = offset.saturating_sub(chunk_begin);
+            let keep_at_tail = chunk_end_excl.saturating_sub(range_end_excl);
             // how much of the zero-range overlaps with this chunk
             let size_of_overlapping_zero_range =
                 std::cmp::min(range_end_excl, chunk_end_excl) - std::cmp::max(offset, chunk_begin);

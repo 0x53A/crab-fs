@@ -17,43 +17,24 @@ pub mod repository;
 use cuttlefish::{SimpleFS, SimpleFsOptions};
 
 use clap::{crate_version, Arg, ArgAction, Command};
-use entropy::entropy_from_os;
-use fuser::consts::FOPEN_DIRECT_IO;
 #[cfg(feature = "abi-7-26")]
 use fuser::consts::FUSE_HANDLE_KILLPRIV;
 // #[cfg(feature = "abi-7-31")]
 // use fuser::consts::FUSE_WRITE_KILL_PRIV;
-use fuser::TimeOrNow::Now;
 use fuser::{
-    FileAttr, Filesystem, KernelConfig, MountOption, ReplyAttr, ReplyCreate, ReplyData,
-    ReplyDirectory, ReplyEmpty, ReplyEntry, ReplyOpen, ReplyStatfs, ReplyWrite, ReplyXattr,
-    Request, TimeOrNow, FUSE_ROOT_ID,
+    Filesystem, MountOption,
 };
 use io::fs::PhysicalFS;
 #[cfg(feature = "abi-7-26")]
 use log::info;
-use log::{debug, warn};
+use log::debug;
 use log::{error, LevelFilter};
-use serde::{Deserialize, Serialize};
-use std::cmp::min;
-use std::collections::BTreeMap;
-use std::ffi::OsStr;
-use std::fs::{File, OpenOptions};
-use std::io::{BufRead, BufReader, ErrorKind, Read, Seek, SeekFrom, Write};
-use std::os::raw::c_int;
-use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::FileExt;
-#[cfg(target_os = "linux")]
-use std::os::unix::io::IntoRawFd;
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use std::{env, fs};
+use std::fs::File;
+use std::io::{BufRead, BufReader, ErrorKind};
+use std::env;
 
-use std::collections::HashMap;
-use std::sync::RwLock;
 
-use rand::{RngCore, SeedableRng};
+use rand::RngCore;
 
 const BLOCK_SIZE: u64 = 512;
 const MAX_NAME_LENGTH: u32 = 10_000;
@@ -140,7 +121,7 @@ fn main() {
     if matches.subcommand_matches("gen-key").is_some() {
         let entropy_keyboard = entropy::entropy_from_keyboard();
         let entropy_os = entropy::entropy_from_os();
-        let mut rng = entropy::rng_from_entropy(&vec![entropy_keyboard, entropy_os].concat());
+        let mut rng = entropy::rng_from_entropy(&[entropy_keyboard, entropy_os].concat());
 
         let mut key: [u8; ENCRYPTION_KEY_LENGTH] = [0u8; ENCRYPTION_KEY_LENGTH];
         rng.fill_bytes(&mut key);
@@ -148,7 +129,7 @@ fn main() {
         let key_string = base64::encode(key);
         println!("Key:");
         println!("    {}", key_string);
-        println!("");
+        println!();
         return;
     }
 

@@ -5,8 +5,6 @@
 #![allow(clippy::needless_return)]
 #![allow(clippy::unnecessary_cast)] // libc::S_* are u16 or u32 depending on the platform
 
-use clap::error;
-use entropy::entropy_from_os;
 
 use fuser::consts::FOPEN_DIRECT_IO;
 #[cfg(feature = "abi-7-26")]
@@ -15,36 +13,29 @@ use fuser::consts::FUSE_HANDLE_KILLPRIV;
 // use fuser::consts::FUSE_WRITE_KILL_PRIV;
 use fuser::TimeOrNow::Now;
 use fuser::{
-    FileAttr, Filesystem, KernelConfig, MountOption, ReplyAttr, ReplyCreate, ReplyData,
+    FileAttr, Filesystem, KernelConfig, ReplyAttr, ReplyCreate, ReplyData,
     ReplyDirectory, ReplyEmpty, ReplyEntry, ReplyOpen, ReplyStatfs, ReplyWrite, ReplyXattr,
     Request, TimeOrNow, FUSE_ROOT_ID,
 };
 #[cfg(feature = "abi-7-26")]
 use log::info;
 use log::{debug, trace, warn};
-use log::{error, LevelFilter};
-use serde::{Deserialize, Serialize};
 use std::cmp::min;
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
-use std::fs::{File, OpenOptions};
-use std::io::{BufRead, BufReader, ErrorKind, Read, Seek, SeekFrom, Write};
+use std::fs::File;
+use std::io::{BufRead, BufReader, Read, Write};
 use std::os::raw::c_int;
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::FileExt;
-#[cfg(target_os = "linux")]
-use std::os::unix::io::IntoRawFd;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use std::{env, fs, io};
 
 use std::collections::HashMap;
 use std::sync::RwLock;
 
-use rand::{RngCore, SeedableRng};
+use rand::RngCore;
 
-use std::ops::Deref;
 
 const BLOCK_SIZE: u64 = 512;
 const MAX_NAME_LENGTH: u32 = 10_000;
@@ -56,7 +47,7 @@ const ENCRYPTION_KEY_LENGTH: usize = 16;
 
 use crate::crypt;
 use crate::entropy;
-use crate::errors::{ErrorKinds, MyResult};
+use crate::errors::MyResult;
 use crate::io::fs::FS;
 use crate::repository;
 
@@ -228,7 +219,7 @@ impl From<&InodeAttributes> for fuser::FileAttr {
         fuser::FileAttr {
             ino: attrs.inode,
             size: attrs.size,
-            blocks: (attrs.size + BLOCK_SIZE - 1) / BLOCK_SIZE,
+            blocks: attrs.size.div_ceil(BLOCK_SIZE),
             atime: system_time_from_time(attrs.last_accessed.0, attrs.last_accessed.1),
             mtime: system_time_from_time(attrs.last_modified.0, attrs.last_modified.1),
             ctime: system_time_from_time(
@@ -433,9 +424,9 @@ impl<F: FS> SimpleFS<F> {
         attrs.last_modified = time_now();
 
         // Clear SETUID & SETGID on truncate
-        clear_suid_sgid(&mut attrs);
+        clear_suid_sgid(attrs);
 
-        self.repository.write_inode(ie.attrs.inode, &ie)?;
+        self.repository.write_inode(ie.attrs.inode, ie)?;
 
         Ok(())
     }
@@ -458,7 +449,7 @@ impl<F: FS> SimpleFS<F> {
     }
 
     #[must_use]
-    fn assume_directory<'a>(content: &'a InodeContent) -> Result<&'a DirectoryDescriptor, c_int> {
+    fn assume_directory(content: &InodeContent) -> Result<&DirectoryDescriptor, c_int> {
         match content {
             InodeContent::File(_) | InodeContent::Symlink(_) => {
                 return Err(libc::ENOTDIR);
@@ -470,7 +461,7 @@ impl<F: FS> SimpleFS<F> {
     }
 
     #[must_use]
-    fn assume_file<'a>(content: &'a InodeContent) -> Result<&'a FileContent, c_int> {
+    fn assume_file(content: &InodeContent) -> Result<&FileContent, c_int> {
         match content {
             InodeContent::Directory(_) | InodeContent::Symlink(_) => {
                 return Err(libc::EISDIR);
@@ -481,9 +472,9 @@ impl<F: FS> SimpleFS<F> {
         };
     }
     #[must_use]
-    fn assume_directory_mut<'a>(
-        content: &'a mut InodeContent,
-    ) -> Result<&'a mut DirectoryDescriptor, c_int> {
+    fn assume_directory_mut(
+        content: &mut InodeContent,
+    ) -> Result<&mut DirectoryDescriptor, c_int> {
         match content {
             InodeContent::File(_) | InodeContent::Symlink(_) => {
                 return Err(libc::ENOTDIR);
@@ -495,7 +486,7 @@ impl<F: FS> SimpleFS<F> {
     }
 
     #[must_use]
-    fn assume_file_mut<'a>(content: &'a mut InodeContent) -> Result<&'a mut FileContent, c_int> {
+    fn assume_file_mut(content: &mut InodeContent) -> Result<&mut FileContent, c_int> {
         match content {
             InodeContent::Directory(_) | InodeContent::Symlink(_) => {
                 return Err(libc::EISDIR);
@@ -1207,7 +1198,7 @@ impl<F: FS> SimpleFS<F> {
 
             if attrs.mode & (libc::S_IXUSR | libc::S_IXGRP | libc::S_IXOTH) as u16 != 0 {
                 // SUID & SGID are suppose to be cleared when chown'ing an executable file
-                clear_suid_sgid(&mut attrs);
+                clear_suid_sgid(attrs);
             }
 
             if let Some(uid) = uid {
@@ -1371,7 +1362,7 @@ impl<F: FS> SimpleFS<F> {
             mode: self.creation_mode(mode),
             hardlinks: 1,
             uid: req.uid(),
-            gid: creation_gid(&parent_attrs, req.gid()),
+            gid: creation_gid(parent_attrs, req.gid()),
             xattrs: Default::default(),
         };
 
@@ -1419,7 +1410,7 @@ impl<F: FS> SimpleFS<F> {
         let parent_dir_content = Self::assume_directory_mut(&mut parent_node.content)?;
         Self::require_not_exist(parent_dir_content, name)?;
         let parent_attrs = &mut parent_node.attrs;
-        check_access_rq(&parent_attrs, req, libc::W_OK)?;
+        check_access_rq(parent_attrs, req, libc::W_OK)?;
 
         if req.uid() != 0 {
             mode &= !(libc::S_ISUID | libc::S_ISGID) as u32;
@@ -1440,7 +1431,7 @@ impl<F: FS> SimpleFS<F> {
             mode: self.creation_mode(mode),
             hardlinks: 2, // Directories start with link count of 2, since they have a self link
             uid: req.uid(),
-            gid: creation_gid(&parent_attrs, req.gid()),
+            gid: creation_gid(parent_attrs, req.gid()),
             xattrs: Default::default(),
         };
 
@@ -1449,7 +1440,7 @@ impl<F: FS> SimpleFS<F> {
         entries.insert(b"..".to_vec(), (parent, FileKind::Directory));
 
         let ie = InodeEntry {
-            attrs: attrs,
+            attrs,
             content: InodeContent::Directory(entries),
         };
         self.repository.write_inode(inode, &ie)?;
@@ -1474,7 +1465,7 @@ impl<F: FS> SimpleFS<F> {
 
         let parent_content = Self::assume_directory_mut(&mut parent_ie.content)?;
         let (inode, kind) =
-            *Self::try_find_directory_entry(&parent_content, name).ok_or(libc::ENOENT)?;
+            *Self::try_find_directory_entry(parent_content, name).ok_or(libc::ENOENT)?;
         let mut ie = self.repository.get_inode(inode)?;
         let attrs = &mut ie.attrs;
 
@@ -1522,7 +1513,7 @@ impl<F: FS> SimpleFS<F> {
         let parent_content = Self::assume_directory_mut(&mut parent_ie.content)?;
 
         let (inode, kind) =
-            *Self::try_find_directory_entry(&parent_content, name).ok_or(libc::ENOENT)?;
+            *Self::try_find_directory_entry(parent_content, name).ok_or(libc::ENOENT)?;
         let mut ie = self.repository.get_inode(inode)?;
         let attrs = &mut ie.attrs;
 
@@ -1606,7 +1597,7 @@ impl<F: FS> SimpleFS<F> {
         };
 
         let ie = InodeEntry {
-            attrs: attrs,
+            attrs,
             content: InodeContent::Symlink(target.as_os_str().as_bytes().to_vec()),
         };
         self.repository.write_inode(inode, &ie)?;
@@ -1804,13 +1795,10 @@ impl<F: FS> SimpleFS<F> {
 
         // Only overwrite an existing directory if it's empty
         if let Some(existing_target_ie) = &mut existing_target_ie {
-            match Self::assume_directory(&existing_target_ie.content) {
-                Ok(dir_content) => {
-                    if dir_content.len() > 2 {
-                        return Err(libc::ENOTEMPTY.into());
-                    }
+            if let Ok(dir_content) = Self::assume_directory(&existing_target_ie.content) {
+                if dir_content.len() > 2 {
+                    return Err(libc::ENOTEMPTY.into());
                 }
-                _ => {}
             }
         }
 
@@ -1840,7 +1828,7 @@ impl<F: FS> SimpleFS<F> {
             existing_target_ie.attrs.last_metadata_changed = now;
             self.repository
                 .write_inode(existing_target_ie.attrs.inode, existing_target_ie)?;
-            self.gc_inode(&existing_target_ie);
+            self.gc_inode(existing_target_ie);
         }
 
         // now we need to take care of whether this is a rename with the same parents or not
@@ -2249,7 +2237,7 @@ impl<F: FS> SimpleFS<F> {
             mode: self.creation_mode(mode),
             hardlinks: 1,
             uid: req.uid(),
-            gid: creation_gid(&parent_attrs, req.gid()),
+            gid: creation_gid(parent_attrs, req.gid()),
             xattrs: Default::default(),
         };
 
@@ -2367,8 +2355,8 @@ impl<F: FS> SimpleFS<F> {
         let read_size = min(size, src_ie.attrs.size.saturating_sub(src_offset));
 
         let updated_dest_content = self.repository.copy_range(
-            &src_content,
-            &dest_content,
+            src_content,
+            dest_content,
             src_offset,
             dest_offset,
             size,

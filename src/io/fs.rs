@@ -3,7 +3,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
-use crate::errors::{MyError, MyResult};
+use crate::errors::MyResult;
 
 pub trait Len {
     fn len(&mut self) -> MyResult<u64>;
@@ -52,7 +52,7 @@ pub trait FS: Clone + Capabilities {
 
 #[cfg(target_os = "linux")]
 fn zero_file_range_linux(file: &File, offset: u64, len: u64) -> io::Result<()> {
-    use std::{fs::File, io, os::unix::io::AsRawFd};
+    use std::{io, os::unix::io::AsRawFd};
 
     let ret = unsafe {
         libc::fallocate(
@@ -577,7 +577,7 @@ impl<T: RemoteFs + Copy + Capabilities> FS for RemoteFsAdapter<T> {
         // RemoteFs only has create_dir with mode, so we need to handle parent directories
         let path = path.as_ref();
         if let Some(parent) = path.parent() {
-            if parent.as_os_str().len() > 0 {
+            if !parent.as_os_str().is_empty() {
                 self.create_dir_all(parent)?;
             }
         }

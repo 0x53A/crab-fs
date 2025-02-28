@@ -1,20 +1,15 @@
 use std::cell::RefCell;
-use std::collections::HashMap;
-use std::ffi::OsStr;
 use std::io::{self, Read, Seek, SeekFrom, Write};
-use std::path::{Component, Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::path::Path;
+use std::sync::Arc;
 
 use aes::{
-    cipher::{BlockCipher, BlockDecrypt, BlockEncrypt, KeyInit},
+    cipher::{BlockDecrypt, BlockEncrypt, KeyInit},
     Aes256,
 };
-use base64::{engine::general_purpose, Engine as _};
-use rand::RngCore;
 use sha2::{Digest, Sha256};
 use xts_mode::Xts128;
 
-use crate::entropy;
 use crate::errors::MyResult;
 use crate::io::fs::{Capabilities, Finalize, Len, SetLen, FS};
 
@@ -36,7 +31,7 @@ impl EncryptionEngine {
         let key1 = hasher.finalize();
 
         let mut hasher = Sha256::new();
-        hasher.update(&key1);
+        hasher.update(key1);
         let key2 = hasher.finalize();
 
         // Create two separate Aes256 instances for XTS
@@ -249,7 +244,7 @@ where
 
 impl<F: Read + Write + Seek + Len + SetLen + Finalize> Read for EncryptedFile<F> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        (&self as &EncryptedFile<F>).read(buf)
+        (self as &EncryptedFile<F>).read(buf)
     }
 }
 
@@ -323,11 +318,11 @@ impl<F: Read + Write + Seek + Len + SetLen + Finalize> Read for &EncryptedFile<F
 
 impl<F: Read + Write + Seek + Len + SetLen + Finalize> Write for EncryptedFile<F> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        (&self as &EncryptedFile<F>).write(buf)
+        (self as &EncryptedFile<F>).write(buf)
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        (&self as &EncryptedFile<F>).flush()
+        (self as &EncryptedFile<F>).flush()
     }
 }
 
@@ -402,7 +397,7 @@ impl<F: Read + Write + Seek + Len + SetLen + Finalize> Write for &EncryptedFile<
 
 impl<F: Read + Write + Seek + Len + SetLen + Finalize> Seek for EncryptedFile<F> {
     fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
-        (&self as &EncryptedFile<F>).seek(pos)
+        (self as &EncryptedFile<F>).seek(pos)
     }
 }
 
@@ -590,7 +585,7 @@ impl<T: FS> FS for EncryptedFS<T> {
         let mut pos = offset;
         while remaining > 0 {
             // Create a temporary mutable reference
-            let mut file_ref = &*file;
+            let mut file_ref = file;
 
             // Seek to correct position
             file_ref.seek(SeekFrom::Start(pos))?;
@@ -607,7 +602,7 @@ impl<T: FS> FS for EncryptedFS<T> {
         }
 
         // Restore original position
-        (&*file).seek(SeekFrom::Start(current_pos))?;
+        file.seek(SeekFrom::Start(current_pos))?;
 
         Ok(())
     }
@@ -630,8 +625,8 @@ impl<T: FS> FS for EncryptedFS<T> {
 
         while remaining > 0 {
             // Create temporary mutable references
-            let mut src_file_ref = &*src_file;
-            let mut dst_file_ref = &*dst_file;
+            let mut src_file_ref = src_file;
+            let mut dst_file_ref = dst_file;
 
             // Seek source file to read position
             src_file_ref.seek(SeekFrom::Start(src_offset + copied))?;
@@ -661,8 +656,8 @@ impl<T: FS> FS for EncryptedFS<T> {
         }
 
         // Restore original positions
-        (&*src_file).seek(SeekFrom::Start(src_pos))?;
-        (&*dst_file).seek(SeekFrom::Start(dst_pos))?;
+        src_file.seek(SeekFrom::Start(src_pos))?;
+        dst_file.seek(SeekFrom::Start(dst_pos))?;
 
         Ok(copied)
     }
