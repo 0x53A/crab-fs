@@ -151,7 +151,7 @@ fn main() {
     if matches.subcommand_matches("gen-key").is_some() {
         let entropy_keyboard = entropy::entropy_from_keyboard();
         let entropy_os = entropy::entropy_from_os();
-        let mut rng = entropy::rng_from_entropy(vec![entropy_keyboard, entropy_os ].concat());
+        let mut rng = entropy::rng_from_entropy(&vec![entropy_keyboard, entropy_os ].concat());
 
         let mut key : [u8;ENCRYPTION_KEY_LENGTH] = [0u8; ENCRYPTION_KEY_LENGTH];
         rng.fill_bytes(&mut key);

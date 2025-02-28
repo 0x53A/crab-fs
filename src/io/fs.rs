@@ -384,7 +384,7 @@ impl FS for DummyFS {
 
 
 use remotefs::fs::{Metadata, ReadStream, UnixPex, WriteStream};
-use remotefs::{RemoteFs};
+use remotefs::RemoteFs;
 
 
 pub struct RemoteFsFile<F:RemoteFs> {

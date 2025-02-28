@@ -53,7 +53,7 @@ pub fn entropy_from_os() -> Vec<u8> {
     bytes
 }
 
-pub fn rng_from_entropy(entropy: Vec<u8>) -> ChaCha20Rng {
+pub fn rng_from_entropy(entropy: &[u8]) -> ChaCha20Rng {
     
     // Hash the entropy into a 32-byte seed using SHA-256
     use sha2::{Sha256, Digest};

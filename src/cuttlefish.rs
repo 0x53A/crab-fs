@@ -313,7 +313,7 @@ impl<F:FS> SimpleFS<F> {
 
         let state = {
             let ent = entropy::entropy_from_os();
-            let mut rng = entropy::rng_from_entropy(ent);
+            let mut rng = entropy::rng_from_entropy(&ent);
             let key = rng.next_u32();
             SimpleFsState {
                 fh_feistel: crypt::feistel::FeistelNetwork::new(1, vec![key]),

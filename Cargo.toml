@@ -21,6 +21,10 @@ backtrace = "0.3.74"
 remotefs = "0.3.1"
 remotefs-smb = "0.3.0"
 remotefs-ssh = "0.5.0"
+aes-gcm = "0.10.3"
+generic-array = "1.2.0"
+xts-mode = "0.5.1"
+aes = "0.8.4"
 
 [profile.release]
 lto = true

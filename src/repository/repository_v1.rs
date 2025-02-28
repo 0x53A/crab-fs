@@ -10,7 +10,7 @@ use log::{error, LevelFilter};
 use std::cmp::min;
 use std::ffi::OsStr;
 use std::fs::{OpenOptions};
-use std::io::{BufRead, BufReader, ErrorKind, Read, Seek, SeekFrom, Write};
+use std::io::{self, BufRead, BufReader, ErrorKind, Read, Seek, SeekFrom, Write};
 use std::os::raw::c_int;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::FileExt;
@@ -298,12 +298,40 @@ impl<F:FS> BlockChunkWriter<F> {
         Ok(())
     }
 
-    /// calculates the hash of the content
-    pub fn calculate_hash(&mut self) -> MyResult<ChunkId> {
-        let hash: ChunkId = todo!();
+/// calculates the hash of the content
+pub fn calculate_hash(&mut self) -> MyResult<ChunkId> {
+    let mut hasher = blake3::Hasher::new();
+    
+    let header = self.read_header()?;
+    assert!(header.len == self.file.len()? - BlockChunk::OFFSET_OF_ACTUAL_DATA as u64);
 
-        Ok(hash)
+    let mut buffer = [0u8; 8192]; // 8KB buffer for reading
+    let mut remaining = header.len;
+    
+    self.file.seek(SeekFrom::Start(BlockChunk::OFFSET_OF_ACTUAL_DATA as u64))?;
+
+    while remaining > 0 {
+        let to_read = std::cmp::min(remaining, buffer.len() as u64);
+        let read_bytes = self.file.read(&mut buffer[..to_read as usize])?;
+        if read_bytes == 0 {
+            if remaining > read_bytes as u64 {
+                Err(io::Error::from(io::ErrorKind::UnexpectedEof))?;
+            }
+            break; // End of file
+        }
+        
+        hasher.update(&buffer[..read_bytes]);
+        remaining -= read_bytes as u64;
     }
+    
+    // BLAKE3 hash is 32 bytes, but we need 16 bytes
+    // Take the first 16 bytes of the hash
+    let hash_output = hasher.finalize();
+    let mut hash = [0u8; 16];
+    hash.copy_from_slice(&hash_output.as_bytes()[..16]);
+    
+    Ok(hash)
+}
 
     /// resize the file. this does not update the header!
     /// Call write_header afterwards!
@@ -375,7 +403,11 @@ impl<F: FS> FilesystemWriter<F> {
     // --------------------------------------------------------------
 
     fn hash_to_pathsegment(id: &ChunkId) -> PathBuf {
-        PathBuf::from(format!("{:x?}", id))
+        let hex_string: String = id.iter()
+            .map(|byte| format!("{:02x}", byte))
+            .collect();
+        
+        PathBuf::from(hex_string)
     }
 
     fn inode_path(&self, inode: Inode) -> PathBuf {
@@ -491,7 +523,7 @@ mod FilesystemWriter_tests {
     #[test]
     pub fn test_hash_to_pathsegment() {
         let testcases = vec![
-            ([0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f], "0010102030405060708090a0b0c0d0e0f")
+            ([0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f], "000102030405060708090a0b0c0d0e0f")
         ];
 
         for tc in testcases {
