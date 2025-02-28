@@ -2,10 +2,8 @@
 // Copyright of the original: Christopher Berner and contributors to https://github.com/cberner/fuser
 // License: MIT
 
-
 #![allow(clippy::needless_return)]
 #![allow(clippy::unnecessary_cast)] // libc::S_* are u16 or u32 depending on the platform
-
 
 use clap::error;
 use entropy::entropy_from_os;
@@ -17,10 +15,9 @@ use fuser::consts::FUSE_HANDLE_KILLPRIV;
 // use fuser::consts::FUSE_WRITE_KILL_PRIV;
 use fuser::TimeOrNow::Now;
 use fuser::{
-    Filesystem, KernelConfig, MountOption, ReplyAttr, ReplyCreate, ReplyData, ReplyDirectory,
-    ReplyEmpty, ReplyEntry, ReplyOpen, ReplyStatfs, ReplyWrite, ReplyXattr, Request, TimeOrNow,
-    FileAttr,
-    FUSE_ROOT_ID,
+    FileAttr, Filesystem, KernelConfig, MountOption, ReplyAttr, ReplyCreate, ReplyData,
+    ReplyDirectory, ReplyEmpty, ReplyEntry, ReplyOpen, ReplyStatfs, ReplyWrite, ReplyXattr,
+    Request, TimeOrNow, FUSE_ROOT_ID,
 };
 #[cfg(feature = "abi-7-26")]
 use log::info;
@@ -57,12 +54,11 @@ const FMODE_EXEC: i32 = 0x20;
 
 const ENCRYPTION_KEY_LENGTH: usize = 16;
 
+use crate::crypt;
+use crate::entropy;
 use crate::errors::{ErrorKinds, MyResult};
 use crate::io::fs::FS;
 use crate::repository;
-use crate::crypt;
-use crate::entropy;
-
 
 // ------------------------------------------
 // Naming rules
@@ -75,7 +71,6 @@ use crate::entropy;
 //   parent_ie: InodeEntry, always refers to `parent`
 //   parent_attrs: InodeAttributes, always refers to `parent_ie`
 //
-
 
 use repository::repository_v1::*;
 
@@ -222,7 +217,6 @@ fn time_from_system_time(system_time: &SystemTime) -> (i64, u32) {
     }
 }
 
-
 impl From<InodeAttributes> for fuser::FileAttr {
     fn from(attrs: InodeAttributes) -> Self {
         return (&attrs).into();
@@ -282,7 +276,7 @@ impl SimpleFsOptions {
             permutate_handle_values: true,
             direct_io: false,
             #[cfg(feature = "abi-7-26")]
-            suid_support: false
+            suid_support: false,
         }
     }
 }
@@ -295,22 +289,20 @@ struct SimpleFsState {
     open_file_handles: RwLock<HashMap<u64, FileHandleEntry>>,
 }
 
-
-pub struct SimpleFS<F:FS> {
+pub struct SimpleFS<F: FS> {
     options: SimpleFsOptions,
     state: SimpleFsState,
-    encryption_key: [u8;ENCRYPTION_KEY_LENGTH],
+    encryption_key: [u8; ENCRYPTION_KEY_LENGTH],
     repository: RepositoryV1<F>,
 }
 
-impl<F:FS> SimpleFS<F> {
+impl<F: FS> SimpleFS<F> {
     pub fn new(
         fs: F,
         options: SimpleFsOptions,
-        encryption_key: [u8;ENCRYPTION_KEY_LENGTH],
+        encryption_key: [u8; ENCRYPTION_KEY_LENGTH],
         data_dir: String,
     ) -> SimpleFS<F> {
-
         let state = {
             let ent = entropy::entropy_from_os();
             let mut rng = entropy::rng_from_entropy(&ent);
@@ -323,10 +315,9 @@ impl<F:FS> SimpleFS<F> {
         };
 
         let repository_options = RepositoryOptions {
-            max_inline_content_size: 1024*1024, // 1MB
+            max_inline_content_size: 1024 * 1024, // 1MB
         };
         let repository = RepositoryV1::new(fs, data_dir.into(), repository_options);
-
 
         #[cfg(feature = "abi-7-26")]
         {
@@ -365,7 +356,6 @@ impl<F:FS> SimpleFS<F> {
     }
 
     fn allocate_next_file_handle(&self, inode: Inode, read: bool, write: bool) -> u64 {
-
         let mut fh = self.state.next_file_handle.fetch_add(1, Ordering::SeqCst);
         // Assert that we haven't run out of file handles
         assert!(fh < u64::MAX);
@@ -377,13 +367,24 @@ impl<F:FS> SimpleFS<F> {
 
         // Store the permissions
         let mut handles = self.state.open_file_handles.write().unwrap();
-        handles.insert(fh, FileHandleEntry { inode, permissions: FilePermissions { can_read: read, can_write: write }});
+        handles.insert(
+            fh,
+            FileHandleEntry {
+                inode,
+                permissions: FilePermissions {
+                    can_read: read,
+                    can_write: write,
+                },
+            },
+        );
 
         fh
     }
 
     fn check_file_handle_read(&self, file_handle: u64, inode: Inode) -> bool {
-        self.state.open_file_handles.read()
+        self.state
+            .open_file_handles
+            .read()
             .unwrap()
             .get(&file_handle)
             .map(|perms| perms.inode == inode && perms.permissions.can_read)
@@ -391,7 +392,9 @@ impl<F:FS> SimpleFS<F> {
     }
 
     fn check_file_handle_write(&self, file_handle: u64, inode: Inode) -> bool {
-        self.state.open_file_handles.read()
+        self.state
+            .open_file_handles
+            .read()
             .unwrap()
             .get(&file_handle)
             .map(|perms| perms.inode == inode && perms.permissions.can_write)
@@ -401,18 +404,11 @@ impl<F:FS> SimpleFS<F> {
     // Check whether a file should be removed from storage. Should be called after decrementing
     // the link count, or closing a file handle
     fn gc_inode(&self, inode: &InodeEntry) -> bool {
-
         //todo!();
         return false;
     }
 
-    fn truncate(
-        &self,
-        ie: &mut InodeEntry,
-        new_length: u64,
-        uid: u32,
-        gid: u32,
-    ) -> MyResult<()> {
+    fn truncate(&self, ie: &mut InodeEntry, new_length: u64, uid: u32, gid: u32) -> MyResult<()> {
         if new_length > MAX_FILE_SIZE {
             Err(libc::EFBIG)?;
         }
@@ -423,11 +419,13 @@ impl<F:FS> SimpleFS<F> {
         }
 
         let InodeContent::File(file_content) = &mut ie.content else {
-             Err(libc::EISDIR)?
+            Err(libc::EISDIR)?
         };
 
         let old_content = std::mem::take(file_content);
-        let new_content = self.repository.change_content_len(old_content, new_length)?;
+        let new_content = self
+            .repository
+            .change_content_len(old_content, new_length)?;
         *file_content = new_content;
 
         attrs.size = new_length;
@@ -442,13 +440,20 @@ impl<F:FS> SimpleFS<F> {
         Ok(())
     }
 
-    fn try_find_directory_entry<'a>(parent: &'a DirectoryDescriptor,  name: &OsStr) -> Option<&'a (Inode, FileKind)> {
+    fn try_find_directory_entry<'a>(
+        parent: &'a DirectoryDescriptor,
+        name: &OsStr,
+    ) -> Option<&'a (Inode, FileKind)> {
         parent.get(name.as_bytes())
     }
 
     fn try_get_child_inode(&self, parent: &InodeContent, name: &OsStr) -> Option<Inode> {
-        let Ok(parent_dir_content) = Self::assume_directory(parent) else { return None; };
-        let Some((inode, _)) = Self::try_find_directory_entry(parent_dir_content, name) else { return None; };
+        let Ok(parent_dir_content) = Self::assume_directory(parent) else {
+            return None;
+        };
+        let Some((inode, _)) = Self::try_find_directory_entry(parent_dir_content, name) else {
+            return None;
+        };
         return Some(*inode);
     }
 
@@ -457,7 +462,7 @@ impl<F:FS> SimpleFS<F> {
         match content {
             InodeContent::File(_) | InodeContent::Symlink(_) => {
                 return Err(libc::ENOTDIR);
-            },
+            }
             InodeContent::Directory(dir_content) => {
                 return Ok(dir_content);
             }
@@ -469,18 +474,20 @@ impl<F:FS> SimpleFS<F> {
         match content {
             InodeContent::Directory(_) | InodeContent::Symlink(_) => {
                 return Err(libc::EISDIR);
-            },
+            }
             InodeContent::File(file_content) => {
                 return Ok(file_content);
             }
         };
     }
     #[must_use]
-    fn assume_directory_mut<'a>(content: &'a mut InodeContent) -> Result<&'a mut DirectoryDescriptor, c_int> {
+    fn assume_directory_mut<'a>(
+        content: &'a mut InodeContent,
+    ) -> Result<&'a mut DirectoryDescriptor, c_int> {
         match content {
             InodeContent::File(_) | InodeContent::Symlink(_) => {
                 return Err(libc::ENOTDIR);
-            },
+            }
             InodeContent::Directory(dir_content) => {
                 return Ok(dir_content);
             }
@@ -492,7 +499,7 @@ impl<F:FS> SimpleFS<F> {
         match content {
             InodeContent::Directory(_) | InodeContent::Symlink(_) => {
                 return Err(libc::EISDIR);
-            },
+            }
             InodeContent::File(file_content) => {
                 return Ok(file_content);
             }
@@ -507,7 +514,6 @@ impl<F:FS> SimpleFS<F> {
         return Ok(());
     }
 
-
     fn insert_link(
         &self,
         req: &Request,
@@ -519,13 +525,12 @@ impl<F:FS> SimpleFS<F> {
         let mut parent_node = self.repository.get_inode(parent)?;
         let parent_attrs = &mut parent_node.attrs;
 
-        let dir_content: &mut BTreeMap<Vec<u8>, (u64, FileKind)> = Self::assume_directory_mut(&mut parent_node.content)?;
+        let dir_content: &mut BTreeMap<Vec<u8>, (u64, FileKind)> =
+            Self::assume_directory_mut(&mut parent_node.content)?;
 
         Self::require_not_exist(dir_content, name)?;
 
-
         check_access_rq(parent_attrs, req, libc::W_OK)?;
-
 
         parent_attrs.last_modified = time_now();
         parent_attrs.last_metadata_changed = time_now();
@@ -538,18 +543,17 @@ impl<F:FS> SimpleFS<F> {
     }
 }
 
-
-impl<F:FS> SimpleFS<F> {
+impl<F: FS> SimpleFS<F> {
     pub fn create_fs(&mut self) -> MyResult<()> {
         self.repository.init()?;
 
         let existing_root_node = self.repository.get_inode(FUSE_ROOT_ID);
-        
+
         match existing_root_node {
             Ok(_) => {
                 // fs already exists
                 return Err(libc::EEXIST.into());
-            },
+            }
             Err(e) => {
                 if *e == libc::ENOENT {
                     // file not found - great! let's create the repository
@@ -574,30 +578,29 @@ impl<F:FS> SimpleFS<F> {
                     let mut entries = BTreeMap::new();
                     entries.insert(b".".to_vec(), (FUSE_ROOT_ID, FileKind::Directory));
                     entries.insert(b"..".to_vec(), (FUSE_ROOT_ID, FileKind::Directory));
-                    let root_node = InodeEntry {attrs: root_attr, content: InodeContent::Directory(entries) };
+                    let root_node = InodeEntry {
+                        attrs: root_attr,
+                        content: InodeContent::Directory(entries),
+                    };
                     self.repository.write_inode(FUSE_ROOT_ID, &root_node)?;
                     return Ok(());
-                    
                 } else {
                     return Err(e);
                 }
             }
         };
-
     }
 }
 
 //
 // -------------------------------------------------------------------------------------------------------------
 
-impl<F:FS> Filesystem for SimpleFS<F> {
+impl<F: FS> Filesystem for SimpleFS<F> {
     fn init(
         &mut self,
         _req: &Request,
         #[allow(unused_variables)] config: &mut KernelConfig,
     ) -> Result<(), c_int> {
-
-
         #[cfg(feature = "abi-7-26")]
         config.add_capabilities(FUSE_HANDLE_KILLPRIV).unwrap();
 
@@ -607,13 +610,12 @@ impl<F:FS> Filesystem for SimpleFS<F> {
             warn!("Failed to set FUSE_BIG_WRITES capability: {:?}", e);
             // Non-fatal, continue
         }
-        
+
         self.repository.init().map_err(|e| *e)?;
 
         let existing_root_node = self.repository.get_inode(FUSE_ROOT_ID);
 
         if let Err(e) = existing_root_node {
-            
             if *e == libc::ENOENT && self.options.create_fs_automatically_if_not_exist {
                 self.create_fs().map_err(|e| *e)?;
             } else {
@@ -627,7 +629,7 @@ impl<F:FS> Filesystem for SimpleFS<F> {
     fn lookup(&mut self, req: &Request, parent: u64, name: &OsStr, reply: ReplyEntry) {
         match self.lookup_syn(req, parent, name) {
             Ok(ok) => reply.entry(&ok.ttl, &ok.attrs, ok.generation),
-            Err(error_code) => reply.error(*error_code)
+            Err(error_code) => reply.error(*error_code),
         }
     }
 
@@ -658,16 +660,19 @@ impl<F:FS> Filesystem for SimpleFS<F> {
         _flags: Option<u32>,
         reply: ReplyAttr,
     ) {
-        match self.setattr_syn(req, inode, mode, uid, gid, size, atime, mtime, _ctime, fh, _crtime, _chgtime, _bkuptime, _flags) {
+        match self.setattr_syn(
+            req, inode, mode, uid, gid, size, atime, mtime, _ctime, fh, _crtime, _chgtime,
+            _bkuptime, _flags,
+        ) {
             Ok(ok) => reply.attr(&ok.ttl, &ok.attrs),
-            Err(error_code) => reply.error(*error_code)
+            Err(error_code) => reply.error(*error_code),
         }
     }
 
     fn readlink(&mut self, _req: &Request, inode: u64, reply: ReplyData) {
         match self.readlink_syn(_req, inode) {
             Ok(ok) => reply.data(&ok.buffer),
-            Err(error_code) => reply.error(*error_code)
+            Err(error_code) => reply.error(*error_code),
         }
     }
 
@@ -684,7 +689,7 @@ impl<F:FS> Filesystem for SimpleFS<F> {
         match self.mknod_syn(req, parent, name, mode, _umask, _rdev) {
             Ok(ok) => {
                 reply.entry(&ok.ttl, &ok.attrs, ok.generation);
-            },
+            }
             Err(err_code) => {
                 reply.error(*err_code);
             }
@@ -702,20 +707,20 @@ impl<F:FS> Filesystem for SimpleFS<F> {
     ) {
         match self.mkdir_syn(req, parent, name, mode, _umask) {
             Ok(ok) => reply.entry(&ok.ttl, &ok.attrs, ok.generation),
-            Err(error_code) => reply.error(*error_code)
+            Err(error_code) => reply.error(*error_code),
         }
     }
     fn unlink(&mut self, req: &Request, parent: u64, name: &OsStr, reply: ReplyEmpty) {
         match self.unlink_syn(req, parent, name) {
             Ok(()) => reply.ok(),
-            Err(error_code) => reply.error(*error_code)
+            Err(error_code) => reply.error(*error_code),
         }
     }
 
     fn rmdir(&mut self, req: &Request, parent: u64, name: &OsStr, reply: ReplyEmpty) {
         match self.rmdir_syn(req, parent, name) {
             Ok(()) => reply.ok(),
-            Err(error_code) => reply.error(*error_code)
+            Err(error_code) => reply.error(*error_code),
         }
     }
 
@@ -730,7 +735,7 @@ impl<F:FS> Filesystem for SimpleFS<F> {
         match self.symlink_syn(req, parent, link_name, target) {
             Ok(ok) => {
                 reply.entry(&ok.ttl, &ok.attrs, ok.generation);
-            },
+            }
             Err(err_code) => {
                 reply.error(*err_code);
             }
@@ -750,7 +755,7 @@ impl<F:FS> Filesystem for SimpleFS<F> {
         match self.rename_syn(req, parent, name, new_parent, new_name, flags) {
             Ok(()) => {
                 reply.ok();
-            },
+            }
             Err(err_code) => {
                 reply.error(*err_code);
             }
@@ -768,7 +773,7 @@ impl<F:FS> Filesystem for SimpleFS<F> {
         match self.link_syn(req, inode, new_parent, new_name) {
             Ok(ok) => {
                 reply.entry(&ok.ttl, &ok.attrs, ok.generation);
-            },
+            }
             Err(err_code) => {
                 reply.error(*err_code);
             }
@@ -776,11 +781,10 @@ impl<F:FS> Filesystem for SimpleFS<F> {
     }
 
     fn open(&mut self, req: &Request, inode: u64, flags: i32, reply: ReplyOpen) {
-
         match self.open_syn(req, inode, flags) {
             Ok(ok) => {
                 reply.opened(ok.fh, ok.flags);
-            },
+            }
             Err(err_code) => {
                 reply.error(*err_code);
             }
@@ -801,7 +805,7 @@ impl<F:FS> Filesystem for SimpleFS<F> {
         match self.read_syn(_req, inode, fh, offset, size, _flags, _lock_owner) {
             Ok(ok) => {
                 reply.data(&ok.buffer);
-            },
+            }
             Err(err_code) => {
                 reply.error(*err_code);
             }
@@ -820,9 +824,18 @@ impl<F:FS> Filesystem for SimpleFS<F> {
         _lock_owner: Option<u64>,
         reply: ReplyWrite,
     ) {
-        match self.write_syn(_req, inode, fh, offset, data, _write_flags, flags, _lock_owner) {
+        match self.write_syn(
+            _req,
+            inode,
+            fh,
+            offset,
+            data,
+            _write_flags,
+            flags,
+            _lock_owner,
+        ) {
             Ok(ok) => reply.written(ok.written),
-            Err(error_code) => reply.error(*error_code)
+            Err(error_code) => reply.error(*error_code),
         }
     }
 
@@ -843,7 +856,7 @@ impl<F:FS> Filesystem for SimpleFS<F> {
     fn opendir(&mut self, req: &Request, inode: u64, flags: i32, reply: ReplyOpen) {
         match self.opendir_syn(req, inode, flags) {
             Ok(ok) => reply.opened(ok.fh, ok.flags),
-            Err(error_code) => reply.error(*error_code)
+            Err(error_code) => reply.error(*error_code),
         }
     }
 
@@ -859,24 +872,23 @@ impl<F:FS> Filesystem for SimpleFS<F> {
         assert!(offset >= 0);
 
         let result: MyResult<()> = (|| {
-
             if !self.check_file_handle_read(fh, inode) {
                 return Err(libc::EACCES.into());
             }
 
             let ie = self.repository.get_inode(inode)?;
             let entries = Self::assume_directory(&ie.content)?;
-    
+
             for (index, entry) in entries.iter().skip(offset as usize).enumerate() {
                 let (name, (inode, file_type)) = entry;
-    
+
                 let buffer_full: bool = reply.add(
                     *inode,
                     offset + index as i64 + 1,
                     (*file_type).into(),
                     OsStr::from_bytes(name),
                 );
-    
+
                 if buffer_full {
                     break;
                 }
@@ -929,7 +941,7 @@ impl<F:FS> Filesystem for SimpleFS<F> {
     ) {
         match self.setxattr_syn(request, inode, key, value, _flags, _position) {
             Ok(()) => reply.ok(),
-            Err(error_code) => reply.error(*error_code)
+            Err(error_code) => reply.error(*error_code),
         }
     }
 
@@ -942,57 +954,35 @@ impl<F:FS> Filesystem for SimpleFS<F> {
         reply: ReplyXattr,
     ) {
         match self.getxattr_syn(request, inode, key, size) {
-            Ok(ok) => {
-                match ok {
-                    ReplyXattrOk::Size(size) => reply.size(size),
-                    ReplyXattrOk::Data(data) => reply.data(&data)
-                }
+            Ok(ok) => match ok {
+                ReplyXattrOk::Size(size) => reply.size(size),
+                ReplyXattrOk::Data(data) => reply.data(&data),
             },
-            Err(error_code) => reply.error(*error_code)
+            Err(error_code) => reply.error(*error_code),
         }
     }
 
-    fn listxattr(
-        &mut self,
-        _req: &Request<'_>,
-        inode: u64,
-        size: u32,
-        reply: ReplyXattr
-    ) {
+    fn listxattr(&mut self, _req: &Request<'_>, inode: u64, size: u32, reply: ReplyXattr) {
         match self.listxattr_syn(_req, inode, size) {
-            Ok(ok) => {
-                match ok {
-                    ReplyXattrOk::Size(size) => reply.size(size),
-                    ReplyXattrOk::Data(data) => reply.data(&data)
-                }
+            Ok(ok) => match ok {
+                ReplyXattrOk::Size(size) => reply.size(size),
+                ReplyXattrOk::Data(data) => reply.data(&data),
             },
-            Err(error_code) => reply.error(*error_code)
+            Err(error_code) => reply.error(*error_code),
         }
     }
 
-    fn removexattr(
-        &mut self,
-        request: &Request<'_>,
-        inode: u64,
-        key: &OsStr,
-        reply: ReplyEmpty
-    ) {
+    fn removexattr(&mut self, request: &Request<'_>, inode: u64, key: &OsStr, reply: ReplyEmpty) {
         match self.removexattr_syn(request, inode, key) {
             Ok(()) => reply.ok(),
-            Err(error_code) => reply.error(*error_code)
+            Err(error_code) => reply.error(*error_code),
         }
     }
 
-    fn access(
-        &mut self,
-        req: &Request,
-        inode: u64,
-        mask: i32,
-        reply: ReplyEmpty
-    ) {
+    fn access(&mut self, req: &Request, inode: u64, mask: i32, reply: ReplyEmpty) {
         match self.access_syn(req, inode, mask) {
             Ok(()) => reply.ok(),
-            Err(error_code) => reply.error(*error_code)
+            Err(error_code) => reply.error(*error_code),
         }
     }
 
@@ -1007,14 +997,8 @@ impl<F:FS> Filesystem for SimpleFS<F> {
         reply: ReplyCreate,
     ) {
         match self.create_syn(req, parent, name, mode, _umask, flags) {
-            Ok(ok) => reply.created(
-                &ok.ttl,
-                &ok.attrs,
-                ok.generation,
-                ok.fh,
-                ok.flags
-            ),
-            Err(error_code) => reply.error(*error_code)
+            Ok(ok) => reply.created(&ok.ttl, &ok.attrs, ok.generation, ok.fh, ok.flags),
+            Err(error_code) => reply.error(*error_code),
         }
     }
 
@@ -1031,7 +1015,7 @@ impl<F:FS> Filesystem for SimpleFS<F> {
     ) {
         match self.fallocate_syn(_req, inode, _fh, offset, length, mode) {
             Ok(()) => reply.ok(),
-            Err(error_code) => reply.error(*error_code)
+            Err(error_code) => reply.error(*error_code),
         }
     }
 
@@ -1048,25 +1032,31 @@ impl<F:FS> Filesystem for SimpleFS<F> {
         _flags: u32,
         reply: ReplyWrite,
     ) {
-        match self.copy_file_range_syn(_req, src_inode, src_fh, src_offset, dest_inode, dest_fh, dest_offset, size, _flags) {
+        match self.copy_file_range_syn(
+            _req,
+            src_inode,
+            src_fh,
+            src_offset,
+            dest_inode,
+            dest_fh,
+            dest_offset,
+            size,
+            _flags,
+        ) {
             Ok(ok) => reply.written(ok.written),
-            Err(error_code) => reply.error(*error_code)
+            Err(error_code) => reply.error(*error_code),
         }
     }
 }
 // ------------------------------------------------------------------------------------------
 // impl Syn
 
-
-
-
-
 type ReplyResult<T> = MyResult<T>;
 
 struct ReplyEntryOk {
     ttl: Duration,
     attrs: FileAttr,
-    generation: u64
+    generation: u64,
 }
 type ReplyEntryResult = ReplyResult<ReplyEntryOk>;
 
@@ -1077,263 +1067,255 @@ struct ReplyCreateOk {
     attrs: FileAttr,
     generation: u64,
     fh: u64,
-    flags: u32
+    flags: u32,
 }
 type ReplyCreateResult = ReplyResult<ReplyCreateOk>;
 
 struct ReplyOpenOk {
     fh: u64,
-    flags: u32
+    flags: u32,
 }
 type ReplyOpenResult = ReplyResult<ReplyOpenOk>;
 
 struct ReplyDataOk {
-    buffer: Vec<u8>
+    buffer: Vec<u8>,
 }
 type ReplyDataResult = ReplyResult<ReplyDataOk>;
 
 struct ReplyAttrOk {
     ttl: Duration,
-    attrs: FileAttr
+    attrs: FileAttr,
 }
 type ReplyAttrResult = ReplyResult<ReplyAttrOk>;
 
 struct ReplyWriteOk {
-    written: u32
+    written: u32,
 }
 type ReplyWriteResult = ReplyResult<ReplyWriteOk>;
 
 enum ReplyXattrOk {
     Size(u32),
-    Data(Vec<u8>)
+    Data(Vec<u8>),
 }
 type ReplyXattrResult = ReplyResult<ReplyXattrOk>;
 
+impl<F: FS> SimpleFS<F> {
+    fn lookup_syn(&mut self, req: &Request, parent: u64, name: &OsStr) -> ReplyEntryResult {
+        trace!("lookup() called for parent={} name={:?}", parent, name);
 
-impl<F:FS> SimpleFS<F> {
+        if name.len() > MAX_NAME_LENGTH as usize {
+            Err(libc::ENAMETOOLONG)?;
+        }
 
-fn lookup_syn(&mut self, req: &Request, parent: u64, name: &OsStr) -> ReplyEntryResult {
-    trace!("lookup() called for parent={} name={:?}", parent, name);
+        let parent_node = self.repository.get_inode(parent)?;
+        let parent_attrs = parent_node.attrs;
 
-    if name.len() > MAX_NAME_LENGTH as usize {
-        Err(libc::ENAMETOOLONG)?;
-    }
+        if !check_access(
+            parent_attrs.uid,
+            parent_attrs.gid,
+            parent_attrs.mode,
+            req.uid(),
+            req.gid(),
+            libc::X_OK,
+        ) {
+            Err(libc::EACCES)?;
+        }
 
-    let parent_node = self.repository.get_inode(parent)?;
-    let parent_attrs = parent_node.attrs;
-
-    if !check_access(
-        parent_attrs.uid,
-        parent_attrs.gid,
-        parent_attrs.mode,
-        req.uid(),
-        req.gid(),
-        libc::X_OK,
-    ) {
-        Err(libc::EACCES)?;
-    }
-
-    match parent_node.content {
-        InodeContent::Symlink(_) |
-        InodeContent::File(_) => {
-            return Err(libc::ENOTDIR.into());
-        },
-        InodeContent::Directory(dir_content) => {
-            if let Some((inode, _)) = dir_content.get(name.as_bytes()) {
-                let ic = self.repository.get_inode(*inode)?;
-                Ok(ReplyEntryOk {
-                    ttl: Duration::new(0, 0),
-                    attrs: ic.attrs.into(),
-                    generation: 0
-                })
-            } else {
-                Err(libc::ENOENT.into())
+        match parent_node.content {
+            InodeContent::Symlink(_) | InodeContent::File(_) => {
+                return Err(libc::ENOTDIR.into());
+            }
+            InodeContent::Directory(dir_content) => {
+                if let Some((inode, _)) = dir_content.get(name.as_bytes()) {
+                    let ic = self.repository.get_inode(*inode)?;
+                    Ok(ReplyEntryOk {
+                        ttl: Duration::new(0, 0),
+                        attrs: ic.attrs.into(),
+                        generation: 0,
+                    })
+                } else {
+                    Err(libc::ENOENT.into())
+                }
             }
         }
     }
-}
 
-fn setattr_syn(
-    &mut self,
-    req: &Request,
-    inode: u64,
-    mode: Option<u32>,
-    uid: Option<u32>,
-    gid: Option<u32>,
-    size: Option<u64>,
-    atime: Option<TimeOrNow>,
-    mtime: Option<TimeOrNow>,
-    _ctime: Option<SystemTime>,
-    fh: Option<u64>,
-    _crtime: Option<SystemTime>,
-    _chgtime: Option<SystemTime>,
-    _bkuptime: Option<SystemTime>,
-    _flags: Option<u32>,
-) -> ReplyAttrResult {
-    let mut ie = self.repository.get_inode(inode)?;
-    let now = time_now();
+    fn setattr_syn(
+        &mut self,
+        req: &Request,
+        inode: u64,
+        mode: Option<u32>,
+        uid: Option<u32>,
+        gid: Option<u32>,
+        size: Option<u64>,
+        atime: Option<TimeOrNow>,
+        mtime: Option<TimeOrNow>,
+        _ctime: Option<SystemTime>,
+        fh: Option<u64>,
+        _crtime: Option<SystemTime>,
+        _chgtime: Option<SystemTime>,
+        _bkuptime: Option<SystemTime>,
+        _flags: Option<u32>,
+    ) -> ReplyAttrResult {
+        let mut ie = self.repository.get_inode(inode)?;
+        let now = time_now();
 
-    if let Some(mode) = mode {
-        debug!("chmod() called with {:?}, {:o}", inode, mode);
-        let attrs = &mut ie.attrs;
+        if let Some(mode) = mode {
+            debug!("chmod() called with {:?}, {:o}", inode, mode);
+            let attrs = &mut ie.attrs;
 
-        // only owner or root can change mod
-        if req.uid() != 0 && req.uid() != attrs.uid {
-            Err(libc::EPERM)?;
-        }
-
-        if req.uid() != 0
-            && req.gid() != attrs.gid
-            && !get_groups(req.pid()).contains(&attrs.gid)
-        {
-            // If SGID is set and the file belongs to a group that the caller is not part of
-            // then the SGID bit is suppose to be cleared during chmod
-            attrs.mode = (mode & !(libc::S_ISUID | libc::S_ISGID) as u32) as u16;
-        } else {
-            attrs.mode = mode as u16;
-        }
-        attrs.last_metadata_changed = now;
-        self.repository.write_inode(inode, &ie)?;
-    }
-
-
-    if uid.is_some() || gid.is_some() {
-        debug!("chown() called with {:?} {:?} {:?}", inode, uid, gid);
-        let mut attrs = &mut ie.attrs;
-        if let Some(gid) = gid {
-            // Non-root users can only change gid to a group they're in
-            if req.uid() != 0 && !get_groups(req.pid()).contains(&gid) {
-                return Err(libc::EPERM.into());
+            // only owner or root can change mod
+            if req.uid() != 0 && req.uid() != attrs.uid {
+                Err(libc::EPERM)?;
             }
-        }
-        if let Some(uid) = uid {
+
             if req.uid() != 0
+                && req.gid() != attrs.gid
+                && !get_groups(req.pid()).contains(&attrs.gid)
+            {
+                // If SGID is set and the file belongs to a group that the caller is not part of
+                // then the SGID bit is suppose to be cleared during chmod
+                attrs.mode = (mode & !(libc::S_ISUID | libc::S_ISGID) as u32) as u16;
+            } else {
+                attrs.mode = mode as u16;
+            }
+            attrs.last_metadata_changed = now;
+            self.repository.write_inode(inode, &ie)?;
+        }
+
+        if uid.is_some() || gid.is_some() {
+            debug!("chown() called with {:?} {:?} {:?}", inode, uid, gid);
+            let mut attrs = &mut ie.attrs;
+            if let Some(gid) = gid {
+                // Non-root users can only change gid to a group they're in
+                if req.uid() != 0 && !get_groups(req.pid()).contains(&gid) {
+                    return Err(libc::EPERM.into());
+                }
+            }
+            if let Some(uid) = uid {
+                if req.uid() != 0
                 // but no-op changes by the owner are not an error
                 && !(uid == attrs.uid && req.uid() == attrs.uid)
-            {
+                {
+                    return Err(libc::EPERM.into());
+                }
+            }
+            // Only owner may change the group
+            if gid.is_some() && req.uid() != 0 && req.uid() != attrs.uid {
                 return Err(libc::EPERM.into());
             }
-        }
-        // Only owner may change the group
-        if gid.is_some() && req.uid() != 0 && req.uid() != attrs.uid {
-            return Err(libc::EPERM.into());
+
+            if attrs.mode & (libc::S_IXUSR | libc::S_IXGRP | libc::S_IXOTH) as u16 != 0 {
+                // SUID & SGID are suppose to be cleared when chown'ing an executable file
+                clear_suid_sgid(&mut attrs);
+            }
+
+            if let Some(uid) = uid {
+                attrs.uid = uid;
+                // Clear SETUID on owner change
+                attrs.mode &= !libc::S_ISUID as u16;
+            }
+            if let Some(gid) = gid {
+                attrs.gid = gid;
+                // Clear SETGID unless user is root
+                if req.uid() != 0 {
+                    attrs.mode &= !libc::S_ISGID as u16;
+                }
+            }
+            attrs.last_metadata_changed = now;
+            self.repository.write_inode(inode, &ie)?;
         }
 
-        if attrs.mode & (libc::S_IXUSR | libc::S_IXGRP | libc::S_IXOTH) as u16 != 0 {
-            // SUID & SGID are suppose to be cleared when chown'ing an executable file
-            clear_suid_sgid(&mut attrs);
-        }
-
-        if let Some(uid) = uid {
-            attrs.uid = uid;
-            // Clear SETUID on owner change
-            attrs.mode &= !libc::S_ISUID as u16;
-        }
-        if let Some(gid) = gid {
-            attrs.gid = gid;
-            // Clear SETGID unless user is root
-            if req.uid() != 0 {
-                attrs.mode &= !libc::S_ISGID as u16;
+        if let Some(size) = size {
+            debug!("truncate() called with {:?} {:?}", inode, size);
+            if let Some(handle) = fh {
+                // If the file handle is available, check access locally.
+                // This is important as it preserves the semantic that a file handle opened
+                // with W_OK will never fail to truncate, even if the file has been subsequently
+                // chmod'ed
+                if self.check_file_handle_write(handle, inode) {
+                    self.truncate(&mut ie, size, 0, 0)?;
+                } else {
+                    return Err(libc::EACCES.into());
+                }
+            } else {
+                self.truncate(&mut ie, size, req.uid(), req.gid())?;
             }
         }
-        attrs.last_metadata_changed = now;
-        self.repository.write_inode(inode, &ie)?;
-    }
 
+        if let Some(atime) = atime {
+            let attrs = &mut ie.attrs;
+            debug!("utimens() called with {:?}, atime={:?}", inode, atime);
 
-    if let Some(size) = size {
-        debug!("truncate() called with {:?} {:?}", inode, size);
-        if let Some(handle) = fh {
-            // If the file handle is available, check access locally.
-            // This is important as it preserves the semantic that a file handle opened
-            // with W_OK will never fail to truncate, even if the file has been subsequently
-            // chmod'ed
-            if self.check_file_handle_write(handle, inode) {
-                self.truncate(&mut ie, size, 0, 0)?;
-            } else {
+            if attrs.uid != req.uid() && req.uid() != 0 && atime != Now {
+                return Err(libc::EPERM.into());
+            }
+
+            if attrs.uid != req.uid()
+                && !check_access(
+                    attrs.uid,
+                    attrs.gid,
+                    attrs.mode,
+                    req.uid(),
+                    req.gid(),
+                    libc::W_OK,
+                )
+            {
                 return Err(libc::EACCES.into());
             }
-        } else {
-            self.truncate(&mut ie, size, req.uid(), req.gid())?;
+
+            attrs.last_accessed = match atime {
+                TimeOrNow::SpecificTime(time) => time_from_system_time(&time),
+                Now => now,
+            };
+            attrs.last_metadata_changed = now;
+            self.repository.write_inode(inode, &ie)?;
         }
+
+        if let Some(mtime) = mtime {
+            let attrs = &mut ie.attrs;
+            debug!("utimens() called with {:?}, mtime={:?}", inode, mtime);
+
+            if attrs.uid != req.uid() && req.uid() != 0 && mtime != Now {
+                return Err(libc::EPERM.into());
+            }
+
+            if attrs.uid != req.uid()
+                && !check_access(
+                    attrs.uid,
+                    attrs.gid,
+                    attrs.mode,
+                    req.uid(),
+                    req.gid(),
+                    libc::W_OK,
+                )
+            {
+                return Err(libc::EACCES.into());
+            }
+
+            attrs.last_modified = match mtime {
+                TimeOrNow::SpecificTime(time) => time_from_system_time(&time),
+                Now => now,
+            };
+            attrs.last_metadata_changed = now;
+            self.repository.write_inode(inode, &ie)?;
+        }
+
+        Ok(ReplyAttrOk {
+            ttl: Duration::new(0, 0),
+            attrs: ie.attrs.into(),
+        })
     }
 
-    if let Some(atime) = atime {
-        let attrs = &mut ie.attrs;
-        debug!("utimens() called with {:?}, atime={:?}", inode, atime);
-
-        if attrs.uid != req.uid() && req.uid() != 0 && atime != Now {
-            return Err(libc::EPERM.into());
-        }
-
-        if attrs.uid != req.uid()
-            && !check_access(
-                attrs.uid,
-                attrs.gid,
-                attrs.mode,
-                req.uid(),
-                req.gid(),
-                libc::W_OK,
-            )
-        {
-            return Err(libc::EACCES.into());
-        }
-
-        attrs.last_accessed = match atime {
-            TimeOrNow::SpecificTime(time) => time_from_system_time(&time),
-            Now => now,
-        };
-        attrs.last_metadata_changed = now;
-        self.repository.write_inode(inode, &ie)?;
-    }
-
-    if let Some(mtime) = mtime {
-        let attrs = &mut ie.attrs;
-        debug!("utimens() called with {:?}, mtime={:?}", inode, mtime);
-
-        if attrs.uid != req.uid() && req.uid() != 0 && mtime != Now {
-            return Err(libc::EPERM.into());
-        }
-
-        if attrs.uid != req.uid()
-            && !check_access(
-                attrs.uid,
-                attrs.gid,
-                attrs.mode,
-                req.uid(),
-                req.gid(),
-                libc::W_OK,
-            )
-        {
-            return Err(libc::EACCES.into());
-        }
-
-        attrs.last_modified = match mtime {
-            TimeOrNow::SpecificTime(time) => time_from_system_time(&time),
-            Now => now,
-        };
-        attrs.last_metadata_changed = now;
-        self.repository.write_inode(inode, &ie)?;
-    }
-
-    Ok(ReplyAttrOk {
-        ttl: Duration::new(0, 0),
-        attrs: ie.attrs.into()
-    })
-}
-
-    
     fn readlink_syn(&mut self, _req: &Request, inode: u64) -> ReplyDataResult {
         debug!("readlink() called on {:?}", inode);
         let ie = self.repository.get_inode(inode)?;
-        
+
         match &ie.content {
-            InodeContent::Symlink(target) => {
-                Ok(ReplyDataOk { buffer: target.clone() })
-            },
-            _ => {
-                Err(libc::EINVAL.into())
-            }
+            InodeContent::Symlink(target) => Ok(ReplyDataOk {
+                buffer: target.clone(),
+            }),
+            _ => Err(libc::EINVAL.into()),
         }
     }
 
@@ -1345,7 +1327,7 @@ fn setattr_syn(
         mut mode: u32,
         _umask: u32,
         _rdev: u32,
-     ) -> ReplyEntryResult {
+    ) -> ReplyEntryResult {
         let file_type = mode & libc::S_IFMT as u32;
 
         if file_type != libc::S_IFREG as u32
@@ -1393,26 +1375,22 @@ fn setattr_syn(
             xattrs: Default::default(),
         };
 
-        let content = 
-            match as_file_kind(mode) {
-                FileKind::Directory => {
-                    let mut entries = BTreeMap::new();
-                    entries.insert(b".".to_vec(), (inode, FileKind::Directory));
-                    entries.insert(b"..".to_vec(), (parent, FileKind::Directory));
-                    InodeContent::Directory(entries)
-                },
-                FileKind::File => {
-                    InodeContent::File(FileContent::EMPTY)
-                },
-                _ => {
-                    // not sure what target to point a symlink at etc
-                    return Err(libc::ENOSYS.into());
-                }
-            };
+        let content = match as_file_kind(mode) {
+            FileKind::Directory => {
+                let mut entries = BTreeMap::new();
+                entries.insert(b".".to_vec(), (inode, FileKind::Directory));
+                entries.insert(b"..".to_vec(), (parent, FileKind::Directory));
+                InodeContent::Directory(entries)
+            }
+            FileKind::File => InodeContent::File(FileContent::EMPTY),
+            _ => {
+                // not sure what target to point a symlink at etc
+                return Err(libc::ENOSYS.into());
+            }
+        };
 
         let ie = InodeEntry { attrs, content };
-        self.repository.write_inode(inode,&ie)?;
-
+        self.repository.write_inode(inode, &ie)?;
 
         parent_dir_content.insert(name.as_bytes().to_vec(), (inode, ie.attrs.kind));
         parent_attrs.last_modified = now;
@@ -1423,13 +1401,11 @@ fn setattr_syn(
         Ok(ReplyEntryOk {
             ttl: Duration::new(0, 0),
             attrs: ie.attrs.into(),
-            generation: 0
+            generation: 0,
         })
-     }
+    }
 
-
-
-     fn mkdir_syn(
+    fn mkdir_syn(
         &mut self,
         req: &Request,
         parent: u64,
@@ -1472,9 +1448,11 @@ fn setattr_syn(
         entries.insert(b".".to_vec(), (inode, FileKind::Directory));
         entries.insert(b"..".to_vec(), (parent, FileKind::Directory));
 
-        let ie = InodeEntry { attrs: attrs, content: InodeContent::Directory(entries) };
+        let ie = InodeEntry {
+            attrs: attrs,
+            content: InodeContent::Directory(entries),
+        };
         self.repository.write_inode(inode, &ie)?;
-
 
         parent_attrs.last_modified = now;
         parent_attrs.last_metadata_changed = now;
@@ -1485,11 +1463,9 @@ fn setattr_syn(
         Ok(ReplyEntryOk {
             ttl: Duration::new(0, 0),
             attrs: ie.attrs.into(),
-            generation: 0
+            generation: 0,
         })
     }
-
-
 
     fn unlink_syn(&mut self, req: &Request, parent: u64, name: &OsStr) -> ReplyEmptyResult {
         debug!("unlink() called with {:?} {:?}", parent, name);
@@ -1497,10 +1473,10 @@ fn setattr_syn(
         let parent_attrs = &mut parent_ie.attrs;
 
         let parent_content = Self::assume_directory_mut(&mut parent_ie.content)?;
-        let (inode, kind) = *Self::try_find_directory_entry(&parent_content, name).ok_or(libc::ENOENT)?;
+        let (inode, kind) =
+            *Self::try_find_directory_entry(&parent_content, name).ok_or(libc::ENOENT)?;
         let mut ie = self.repository.get_inode(inode)?;
         let attrs = &mut ie.attrs;
-
 
         if !check_access(
             parent_attrs.uid,
@@ -1538,28 +1514,27 @@ fn setattr_syn(
         Ok(())
     }
 
-
-
     fn rmdir_syn(&mut self, req: &Request, parent: u64, name: &OsStr) -> ReplyEmptyResult {
         debug!("rmdir() called with {:?} {:?}", parent, name);
-    
+
         let mut parent_ie = self.repository.get_inode(parent)?;
         let parent_attrs = &mut parent_ie.attrs;
         let parent_content = Self::assume_directory_mut(&mut parent_ie.content)?;
-        
-        let (inode, kind) = *Self::try_find_directory_entry(&parent_content, name).ok_or(libc::ENOENT)?;
+
+        let (inode, kind) =
+            *Self::try_find_directory_entry(&parent_content, name).ok_or(libc::ENOENT)?;
         let mut ie = self.repository.get_inode(inode)?;
         let attrs = &mut ie.attrs;
-    
+
         if kind != FileKind::Directory {
             return Err(libc::ENOTDIR.into());
         }
-    
+
         let dir_content = Self::assume_directory(&ie.content)?;
         if dir_content.len() > 2 {
             return Err(libc::ENOTEMPTY.into());
         }
-    
+
         if !check_access(
             parent_attrs.uid,
             parent_attrs.gid,
@@ -1570,7 +1545,7 @@ fn setattr_syn(
         ) {
             return Err(libc::EACCES.into());
         }
-    
+
         // "Sticky bit" handling
         if parent_attrs.mode & libc::S_ISVTX as u16 != 0
             && req.uid() != 0
@@ -1581,20 +1556,19 @@ fn setattr_syn(
         }
 
         let now = time_now();
-    
+
         parent_attrs.last_metadata_changed = now;
         parent_attrs.last_modified = now;
         parent_content.remove(name.as_bytes());
         self.repository.write_inode(parent, &parent_ie)?;
-    
+
         attrs.hardlinks -= 1;
         attrs.last_metadata_changed = now;
         self.repository.write_inode(inode, &ie)?;
         self.gc_inode(&ie);
-    
+
         Ok(())
     }
-
 
     fn symlink_syn(
         &mut self,
@@ -1633,10 +1607,9 @@ fn setattr_syn(
 
         let ie = InodeEntry {
             attrs: attrs,
-            content: InodeContent::Symlink(target.as_os_str().as_bytes().to_vec())
+            content: InodeContent::Symlink(target.as_os_str().as_bytes().to_vec()),
         };
         self.repository.write_inode(inode, &ie)?;
-
 
         parent_node.attrs.last_modified = now;
         parent_node.attrs.last_metadata_changed = now;
@@ -1646,7 +1619,7 @@ fn setattr_syn(
         Ok(ReplyEntryOk {
             ttl: Duration::new(0, 0),
             attrs: ie.attrs.into(),
-            generation: 0
+            generation: 0,
         })
     }
 
@@ -1671,10 +1644,9 @@ fn setattr_syn(
 
         let mut parent_ie = self.repository.get_inode(parent)?;
         let parent_content = Self::assume_directory_mut(&mut parent_ie.content)?;
-        let (inode, kind) = *Self::try_find_directory_entry(parent_content, name)
-            .ok_or(libc::ENOENT)?;
+        let (inode, kind) =
+            *Self::try_find_directory_entry(parent_content, name).ok_or(libc::ENOENT)?;
         let mut source_ie = self.repository.get_inode(inode)?;
-
 
         check_access_rq(&parent_ie.attrs, req, libc::W_OK)?;
 
@@ -1687,7 +1659,6 @@ fn setattr_syn(
             return Err(libc::EACCES.into());
         }
 
-
         let new_parent_ie = self.repository.get_inode(new_parent)?;
         check_access_rq(&new_parent_ie.attrs, req, libc::W_OK)?;
 
@@ -1695,9 +1666,7 @@ fn setattr_syn(
         let mut existing_target_ie: Option<InodeEntry> = {
             match existing_target_inode {
                 None => None,
-                Some(ino) => {
-                    Some(self.repository.get_inode(ino)?)
-                }
+                Some(ino) => Some(self.repository.get_inode(ino)?),
             }
         };
         // "Sticky bit" handling in new_parent
@@ -1712,9 +1681,8 @@ fn setattr_syn(
             }
         }
 
-
         #[cfg(target_os = "linux")]
-        fn handle_exchange_rename<F:FS>(
+        fn handle_exchange_rename<F: FS>(
             _self: &mut SimpleFS<F>,
             _req: &Request,
             mut parent_ie: InodeEntry,
@@ -1722,43 +1690,45 @@ fn setattr_syn(
             new_parent_ie: InodeEntry,
             new_name: &OsStr,
             mut source_ie: InodeEntry,
-            now: (i64, u32)
+            now: (i64, u32),
         ) -> ReplyEmptyResult {
             let parent_content = SimpleFS::<F>::assume_directory_mut(&mut parent_ie.content)?;
             let new_parent_content = SimpleFS::<F>::assume_directory(&new_parent_ie.content)?;
-            
+
             // Get target inode entry
-            let (target_ino, target_kind) = *SimpleFS::<F>::try_find_directory_entry(new_parent_content, new_name)
-                .ok_or(libc::ENOENT)?;
+            let (target_ino, target_kind) =
+                *SimpleFS::<F>::try_find_directory_entry(new_parent_content, new_name)
+                    .ok_or(libc::ENOENT)?;
             let mut target_ie = _self.repository.get_inode(target_ino)?;
-    
+
             // there's a change old parent and new parent are the same - then we have two references to the same inode, and writing both would overwrite the previous
 
             if parent_ie.attrs.inode != new_parent_ie.attrs.inode {
                 // different inodes
                 let mut new_parent_ie = new_parent_ie;
-                let new_parent_content = SimpleFS::<F>::assume_directory_mut(&mut new_parent_ie.content)?;
-                
-                parent_content.insert(
-                    name.as_bytes().to_vec(),
-                    (target_ino, target_kind)
-                );
+                let new_parent_content =
+                    SimpleFS::<F>::assume_directory_mut(&mut new_parent_ie.content)?;
+
+                parent_content.insert(name.as_bytes().to_vec(), (target_ino, target_kind));
                 new_parent_content.insert(
                     new_name.as_bytes().to_vec(),
-                    (source_ie.attrs.inode, source_ie.attrs.kind)
+                    (source_ie.attrs.inode, source_ie.attrs.kind),
                 );
 
                 // Update ".." entries if directories are involved
                 if source_ie.attrs.kind == FileKind::Directory {
                     let dir_content = SimpleFS::<F>::assume_directory_mut(&mut source_ie.content)?;
-                    dir_content.insert(b"..".to_vec(), (new_parent_ie.attrs.inode, FileKind::Directory));
-                }
-                
-                if target_kind == FileKind::Directory {
-                    let dir_content = SimpleFS::<F>::assume_directory_mut(&mut target_ie.content)?;
-                    dir_content.insert(b"..".to_vec(), (parent_ie.attrs.inode, FileKind::Directory));
+                    dir_content.insert(
+                        b"..".to_vec(),
+                        (new_parent_ie.attrs.inode, FileKind::Directory),
+                    );
                 }
 
+                if target_kind == FileKind::Directory {
+                    let dir_content = SimpleFS::<F>::assume_directory_mut(&mut target_ie.content)?;
+                    dir_content
+                        .insert(b"..".to_vec(), (parent_ie.attrs.inode, FileKind::Directory));
+                }
 
                 // Update timestamps
 
@@ -1771,27 +1741,29 @@ fn setattr_syn(
                 source_ie.attrs.last_metadata_changed = now;
 
                 target_ie.attrs.last_metadata_changed = now;
-        
-        
-                // Write all changes
-                _self.repository.write_inode(parent_ie.attrs.inode, &parent_ie)?;
-                _self.repository.write_inode(new_parent_ie.attrs.inode, &new_parent_ie)?;
-                _self.repository.write_inode(source_ie.attrs.inode, &source_ie)?;
-                _self.repository.write_inode(target_ie.attrs.inode, &target_ie)?;
 
+                // Write all changes
+                _self
+                    .repository
+                    .write_inode(parent_ie.attrs.inode, &parent_ie)?;
+                _self
+                    .repository
+                    .write_inode(new_parent_ie.attrs.inode, &new_parent_ie)?;
+                _self
+                    .repository
+                    .write_inode(source_ie.attrs.inode, &source_ie)?;
+                _self
+                    .repository
+                    .write_inode(target_ie.attrs.inode, &target_ie)?;
             } else {
                 // same inode
                 // ignore `new_parent_ie` since it points to the same inode as `parent_ie`
 
-                parent_content.insert(
-                    name.as_bytes().to_vec(),
-                    (target_ino, target_kind)
-                );
+                parent_content.insert(name.as_bytes().to_vec(), (target_ino, target_kind));
                 parent_content.insert(
                     new_name.as_bytes().to_vec(),
-                    (source_ie.attrs.inode, source_ie.attrs.kind)
+                    (source_ie.attrs.inode, source_ie.attrs.kind),
                 );
-
 
                 // Update timestamps
                 parent_ie.attrs.last_metadata_changed = now;
@@ -1800,22 +1772,33 @@ fn setattr_syn(
                 source_ie.attrs.last_metadata_changed = now;
 
                 target_ie.attrs.last_metadata_changed = now;
-        
-        
+
                 // Write all changes
-                _self.repository.write_inode(parent_ie.attrs.inode, &parent_ie)?;
-                _self.repository.write_inode(source_ie.attrs.inode, &source_ie)?;
-                _self.repository.write_inode(target_ie.attrs.inode, &target_ie)?;
+                _self
+                    .repository
+                    .write_inode(parent_ie.attrs.inode, &parent_ie)?;
+                _self
+                    .repository
+                    .write_inode(source_ie.attrs.inode, &source_ie)?;
+                _self
+                    .repository
+                    .write_inode(target_ie.attrs.inode, &target_ie)?;
             }
-    
+
             Ok(())
         }
-
 
         #[cfg(target_os = "linux")]
         if flags & libc::RENAME_EXCHANGE as u32 != 0 {
             return handle_exchange_rename(
-                self, req, parent_ie, name, new_parent_ie, new_name, source_ie, now
+                self,
+                req,
+                parent_ie,
+                name,
+                new_parent_ie,
+                new_name,
+                source_ie,
+                now,
             );
         }
 
@@ -1824,11 +1807,10 @@ fn setattr_syn(
             match Self::assume_directory(&existing_target_ie.content) {
                 Ok(dir_content) => {
                     if dir_content.len() > 2 {
-
                         return Err(libc::ENOTEMPTY.into());
                     }
-                },
-                _ => { }
+                }
+                _ => {}
             }
         }
 
@@ -1856,16 +1838,17 @@ fn setattr_syn(
                 existing_target_ie.attrs.hardlinks -= 1;
             }
             existing_target_ie.attrs.last_metadata_changed = now;
-            self.repository.write_inode(existing_target_ie.attrs.inode, existing_target_ie)?;
+            self.repository
+                .write_inode(existing_target_ie.attrs.inode, existing_target_ie)?;
             self.gc_inode(&existing_target_ie);
         }
 
         // now we need to take care of whether this is a rename with the same parents or not
         if parent_ie.attrs.inode != new_parent_ie.attrs.inode {
             // different parents
-            let mut new_parent_ie  = new_parent_ie;
+            let mut new_parent_ie = new_parent_ie;
             let new_parent_content = Self::assume_directory_mut(&mut new_parent_ie.content)?;
-            
+
             // remove from old parent
             parent_content.remove(name.as_bytes());
 
@@ -1886,7 +1869,6 @@ fn setattr_syn(
             self.repository.write_inode(inode, &source_ie)?;
             self.repository.write_inode(parent, &parent_ie)?;
             self.repository.write_inode(new_parent, &new_parent_ie)?;
-
         } else {
             // same parents
             parent_content.remove(name.as_bytes());
@@ -1903,14 +1885,13 @@ fn setattr_syn(
         Ok(())
     }
 
-
     fn link_syn(
-      &mut self,
-      req: &Request,
-      inode: u64,
-      new_parent: u64,
-      new_name: &OsStr,) -> ReplyEntryResult {
-
+        &mut self,
+        req: &Request,
+        inode: u64,
+        new_parent: u64,
+        new_name: &OsStr,
+    ) -> ReplyEntryResult {
         debug!(
             "link() called for {}, {}, {:?}",
             inode, new_parent, new_name
@@ -1926,7 +1907,7 @@ fn setattr_syn(
         Ok(ReplyEntryOk {
             ttl: Duration::new(0, 0),
             attrs: ie.attrs.into(),
-            generation: 0
+            generation: 0,
         })
     }
 
@@ -1958,11 +1939,15 @@ fn setattr_syn(
         check_access_rq(&ic.attrs, req, access_mask)?;
 
         let fh = self.allocate_next_file_handle(inode, read, write);
-        let open_flags = if self.options.direct_io { FOPEN_DIRECT_IO } else { 0 };
+        let open_flags = if self.options.direct_io {
+            FOPEN_DIRECT_IO
+        } else {
+            0
+        };
 
         Ok(ReplyOpenOk {
             fh,
-            flags: open_flags
+            flags: open_flags,
         })
     }
 
@@ -1974,31 +1959,31 @@ fn setattr_syn(
         offset: i64,
         size: u32,
         _flags: i32,
-        _lock_owner: Option<u64>,) -> ReplyDataResult {
-            debug!(
-                "read() called on {:?} offset={:?} size={:?}",
-                inode, offset, size
-            );
-            assert!(offset >= 0);
-            let offset : u64 = offset as u64;
+        _lock_owner: Option<u64>,
+    ) -> ReplyDataResult {
+        debug!(
+            "read() called on {:?} offset={:?} size={:?}",
+            inode, offset, size
+        );
+        assert!(offset >= 0);
+        let offset: u64 = offset as u64;
 
-            if !self.check_file_handle_read(fh, inode) {
-                return Err(libc::EACCES.into());
-            }
+        if !self.check_file_handle_read(fh, inode) {
+            return Err(libc::EACCES.into());
+        }
 
-            let ie = self.repository.get_inode(inode)?;
-            let file_content = Self::assume_file(&ie.content)?;
+        let ie = self.repository.get_inode(inode)?;
+        let file_content = Self::assume_file(&ie.content)?;
 
-            if ie.attrs.size <= offset { return Err(libc::EOF.into()); }
-            let read_size = min(size as u64, ie.attrs.size - offset);
-            let mut buffer = vec![0u8; read_size as usize];
-            self.repository.read(file_content, offset, &mut buffer)?;
+        if ie.attrs.size <= offset {
+            return Err(libc::EOF.into());
+        }
+        let read_size = min(size as u64, ie.attrs.size - offset);
+        let mut buffer = vec![0u8; read_size as usize];
+        self.repository.read(file_content, offset, &mut buffer)?;
 
-            Ok(ReplyDataOk { buffer })
-
+        Ok(ReplyDataOk { buffer })
     }
-
-
 
     fn write_syn(
         &mut self,
@@ -2046,10 +2031,9 @@ fn setattr_syn(
         self.repository.write_inode(inode, &ic)?;
 
         Ok(ReplyWriteOk {
-            written: data.len() as u32
+            written: data.len() as u32,
         })
     }
-
 
     fn opendir_syn(&mut self, req: &Request, inode: u64, flags: i32) -> ReplyOpenResult {
         debug!("opendir() called on {:?}", inode);
@@ -2083,14 +2067,17 @@ fn setattr_syn(
             return Err(libc::EACCES.into());
         }
 
-        let open_flags = if self.options.direct_io { FOPEN_DIRECT_IO } else { 0 };
+        let open_flags = if self.options.direct_io {
+            FOPEN_DIRECT_IO
+        } else {
+            0
+        };
         let fh = self.allocate_next_file_handle(inode, read, write);
         Ok(ReplyOpenOk {
             fh,
-            flags: open_flags
+            flags: open_flags,
         })
     }
-
 
     fn getxattr_syn(
         &mut self,
@@ -2141,19 +2128,16 @@ fn setattr_syn(
             return Err(libc::ENODATA.into());
         }
 
-        ie.attrs.xattrs.insert(key.as_bytes().to_vec(), value.to_vec());
+        ie.attrs
+            .xattrs
+            .insert(key.as_bytes().to_vec(), value.to_vec());
         ie.attrs.last_metadata_changed = time_now();
         self.repository.write_inode(inode, &ie)?;
 
         Ok(())
     }
 
-    fn listxattr_syn(
-        &mut self,
-        _req: &Request<'_>,
-        inode: u64,
-        size: u32,
-    ) -> ReplyXattrResult {
+    fn listxattr_syn(&mut self, _req: &Request<'_>, inode: u64, size: u32) -> ReplyXattrResult {
         let attrs = self.repository.get_inode(inode)?;
 
         let mut bytes = vec![];
@@ -2195,12 +2179,7 @@ fn setattr_syn(
         Ok(())
     }
 
-    fn access_syn(
-        &mut self,
-        req: &Request,
-        inode: u64,
-        mask: i32,
-    ) -> ReplyEmptyResult {
+    fn access_syn(&mut self, req: &Request, inode: u64, mask: i32) -> ReplyEmptyResult {
         debug!("access() called with {:?} {:?}", inode, mask);
         let ie = self.repository.get_inode(inode)?;
 
@@ -2210,15 +2189,13 @@ fn setattr_syn(
             ie.attrs.mode,
             req.uid(),
             req.gid(),
-            mask
+            mask,
         ) {
             Ok(())
         } else {
             Err(libc::EACCES.into())
         }
     }
-
-
 
     fn create_syn(
         &mut self,
@@ -2276,24 +2253,21 @@ fn setattr_syn(
             xattrs: Default::default(),
         };
 
-        let content = 
-        match as_file_kind(mode) {
+        let content = match as_file_kind(mode) {
             FileKind::Directory => {
                 let mut entries = BTreeMap::new();
                 entries.insert(b".".to_vec(), (inode, FileKind::Directory));
                 entries.insert(b"..".to_vec(), (parent, FileKind::Directory));
                 InodeContent::Directory(entries)
-            },
-            FileKind::File => {
-                InodeContent::File(FileContent::EMPTY)
-            },
+            }
+            FileKind::File => InodeContent::File(FileContent::EMPTY),
             _ => {
                 // not sure what target to point a symlink at etc
                 return Err(libc::ENOSYS.into());
             }
         };
         let ie = InodeEntry { attrs, content };
-        self.repository.write_inode(inode,&ie)?;
+        self.repository.write_inode(inode, &ie)?;
 
         parent_dir_content.insert(name.as_bytes().to_vec(), (inode, ie.attrs.kind));
         parent_attrs.last_modified = time_now();
@@ -2307,10 +2281,9 @@ fn setattr_syn(
             attrs: ie.attrs.into(),
             generation: 0,
             fh,
-            flags: 0
+            flags: 0,
         })
     }
-
 
     #[cfg(target_os = "linux")]
     fn fallocate_syn(
@@ -2327,7 +2300,6 @@ fn setattr_syn(
         let offset = offset as u64;
         let length = length as u64;
 
-
         let mut ie = self.repository.get_inode(inode)?;
         let file_content = Self::assume_file_mut(&mut ie.content)?;
 
@@ -2340,24 +2312,21 @@ fn setattr_syn(
         };
 
         let zero_length = std::cmp::min(length, new_size - offset);
-        
+
         if zero_length > 0 {
-            let new_content = self.repository.zero_range(file_content, offset, zero_length)?;
+            let new_content = self
+                .repository
+                .zero_range(file_content, offset, zero_length)?;
             ie.content = InodeContent::File(new_content);
         }
-
 
         ie.attrs.size = new_size;
         ie.attrs.last_metadata_changed = time_now();
         ie.attrs.last_modified = time_now();
         self.repository.write_inode(inode, &ie)?;
-        
+
         Ok(())
-
-
     }
-
-
 
     fn copy_file_range_syn(
         &mut self,
@@ -2378,8 +2347,8 @@ fn setattr_syn(
 
         assert!(src_offset >= 0);
         assert!(dest_offset >= 0);
-        let src_offset : u64 = src_offset as u64;
-        let dest_offset : u64 = dest_offset as u64;
+        let src_offset: u64 = src_offset as u64;
+        let dest_offset: u64 = dest_offset as u64;
 
         if !self.check_file_handle_read(src_fh, src_inode) {
             return Err(libc::EACCES.into());
@@ -2397,21 +2366,24 @@ fn setattr_syn(
         // Could underflow if file length is less than local_start
         let read_size = min(size, src_ie.attrs.size.saturating_sub(src_offset));
 
-        let updated_dest_content = self.repository.copy_range(&src_content, &dest_content, src_offset, dest_offset, size)?;
+        let updated_dest_content = self.repository.copy_range(
+            &src_content,
+            &dest_content,
+            src_offset,
+            dest_offset,
+            size,
+        )?;
         dest_ie.attrs.size = updated_dest_content.len() as u64;
         dest_ie.attrs.last_metadata_changed = time_now();
         dest_ie.attrs.last_modified = time_now();
         dest_ie.content = InodeContent::File(updated_dest_content);
         self.repository.write_inode(dest_inode, &dest_ie)?;
 
-
         Ok(ReplyWriteOk {
-            written: read_size as u32
+            written: read_size as u32,
         })
     }
 }
-
-
 
 // -------------------------------------------------------------------------------------------
 
@@ -2451,7 +2423,11 @@ pub fn check_access(
 }
 
 #[must_use]
-pub fn check_access_rq(attrs: &InodeAttributes, req: &Request, access_mask: i32) -> Result<(), c_int> {
+pub fn check_access_rq(
+    attrs: &InodeAttributes,
+    req: &Request,
+    access_mask: i32,
+) -> Result<(), c_int> {
     if !check_access(
         attrs.uid,
         attrs.gid,

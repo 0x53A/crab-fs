@@ -2,20 +2,17 @@
 // Copyright of the original: Christopher Berner and contributors to https://github.com/cberner/fuser
 // License: MIT
 
-
 #![allow(clippy::needless_return)]
 #![allow(clippy::unnecessary_cast)] // libc::S_* are u16 or u32 depending on the platform
-
 #![feature(path_add_extension)]
 #![feature(let_chains)]
 
-
 pub mod crypt;
-pub mod entropy;
-pub mod repository;
 pub mod cuttlefish;
-pub mod io;
+pub mod entropy;
 mod errors;
+pub mod io;
+pub mod repository;
 
 use cuttlefish::{SimpleFS, SimpleFsOptions};
 
@@ -28,10 +25,9 @@ use fuser::consts::FUSE_HANDLE_KILLPRIV;
 // use fuser::consts::FUSE_WRITE_KILL_PRIV;
 use fuser::TimeOrNow::Now;
 use fuser::{
-    Filesystem, KernelConfig, MountOption, ReplyAttr, ReplyCreate, ReplyData, ReplyDirectory,
-    ReplyEmpty, ReplyEntry, ReplyOpen, ReplyStatfs, ReplyWrite, ReplyXattr, Request, TimeOrNow,
-    FileAttr,
-    FUSE_ROOT_ID,
+    FileAttr, Filesystem, KernelConfig, MountOption, ReplyAttr, ReplyCreate, ReplyData,
+    ReplyDirectory, ReplyEmpty, ReplyEntry, ReplyOpen, ReplyStatfs, ReplyWrite, ReplyXattr,
+    Request, TimeOrNow, FUSE_ROOT_ID,
 };
 use io::fs::PhysicalFS;
 #[cfg(feature = "abi-7-26")]
@@ -67,11 +63,8 @@ const FMODE_EXEC: i32 = 0x20;
 
 const ENCRYPTION_KEY_LENGTH: usize = 16;
 
-
-
 // -------------------------------------------------------------------------------------
 // Main
-
 
 fn fuse_allow_other_enabled() -> std::io::Result<bool> {
     let file = File::open("/etc/fuse.conf")?;
@@ -84,7 +77,6 @@ fn fuse_allow_other_enabled() -> std::io::Result<bool> {
 }
 
 fn main() {
-
     let gen_key_cmd = Command::new("gen-key");
 
     // Common Args
@@ -101,7 +93,6 @@ fn main() {
         .value_name("DIR")
         .help("Set local directory used to store data");
 
-
     // CMDs
 
     let init_cmd = Command::new("init")
@@ -111,13 +102,12 @@ fn main() {
     let mount_cmd = Command::new("mount")
         .arg(arg_key)
         .arg(arg_dir)
-        
         .arg(
             Arg::new("mount-point")
-            .long("mount-point")
-            .short('m')
-            .value_name("MOUNT_POINT")
-            .help("Act as a client, and mount FUSE at given path")
+                .long("mount-point")
+                .short('m')
+                .value_name("MOUNT_POINT")
+                .help("Act as a client, and mount FUSE at given path"),
         )
         .arg(
             Arg::new("direct-io")
@@ -132,7 +122,6 @@ fn main() {
                 .action(ArgAction::SetTrue)
                 .help("Enable setuid support when run as root"),
         );
-
 
     let matches = Command::new("Crab-FS")
         .version(crate_version!())
@@ -151,9 +140,9 @@ fn main() {
     if matches.subcommand_matches("gen-key").is_some() {
         let entropy_keyboard = entropy::entropy_from_keyboard();
         let entropy_os = entropy::entropy_from_os();
-        let mut rng = entropy::rng_from_entropy(&vec![entropy_keyboard, entropy_os ].concat());
+        let mut rng = entropy::rng_from_entropy(&vec![entropy_keyboard, entropy_os].concat());
 
-        let mut key : [u8;ENCRYPTION_KEY_LENGTH] = [0u8; ENCRYPTION_KEY_LENGTH];
+        let mut key: [u8; ENCRYPTION_KEY_LENGTH] = [0u8; ENCRYPTION_KEY_LENGTH];
         rng.fill_bytes(&mut key);
 
         let key_string = base64::encode(key);
@@ -177,19 +166,23 @@ fn main() {
         .init();
 
     if let Some(init) = matches.subcommand_matches("init") {
+        let key_string = init
+            .get_one::<String>("encryption-key")
+            .unwrap()
+            .to_string();
+        let key: [u8; ENCRYPTION_KEY_LENGTH] = base64::decode(key_string)
+            .unwrap()
+            .try_into()
+            .expect("incorrect base64 encryption key length");
 
-        let key_string = init.get_one::<String>("encryption-key").unwrap().to_string();
-        let key: [u8;ENCRYPTION_KEY_LENGTH] = base64::decode(key_string).unwrap().try_into().expect("incorrect base64 encryption key length");
-    
         let data_dir = init.get_one::<String>("data-dir").unwrap().to_string();
-        let backing_fs = PhysicalFS { };
+        let backing_fs = PhysicalFS {};
         let mut fs = SimpleFS::new(backing_fs, SimpleFsOptions::default(), key, data_dir);
         match fs.create_fs() {
             Ok(_) => {
                 println!("Successfully created filesystem");
-            },
+            }
             Err(err) => {
-
                 println!("Error: {:?}", err);
             }
         }
@@ -197,19 +190,20 @@ fn main() {
     }
 
     if let Some(mount) = matches.subcommand_matches("mount") {
-
-        let key_string = mount.get_one::<String>("encryption-key").unwrap().to_string();
-        let key: [u8;ENCRYPTION_KEY_LENGTH] = base64::decode(key_string).unwrap().try_into().expect("incorrect base64 encryption key length");
-    
-        let data_dir = mount.get_one::<String>("data-dir").unwrap().to_string();
-
-        let mountpoint: String = mount
-            .get_one::<String>("mount-point")
+        let key_string = mount
+            .get_one::<String>("encryption-key")
             .unwrap()
             .to_string();
-        
-        let mut options = vec![MountOption::FSName("cuttlefish-fs".to_string())];
+        let key: [u8; ENCRYPTION_KEY_LENGTH] = base64::decode(key_string)
+            .unwrap()
+            .try_into()
+            .expect("incorrect base64 encryption key length");
 
+        let data_dir = mount.get_one::<String>("data-dir").unwrap().to_string();
+
+        let mountpoint: String = mount.get_one::<String>("mount-point").unwrap().to_string();
+
+        let mut options = vec![MountOption::FSName("cuttlefish-fs".to_string())];
 
         #[cfg(feature = "abi-7-26")]
         {
@@ -232,7 +226,6 @@ fn main() {
             eprintln!("Unable to read /etc/fuse.conf");
         }
 
-        
         debug!("calling [fuser::mount2] with options={options:?}");
 
         let fs_options = SimpleFsOptions {
@@ -242,14 +235,9 @@ fn main() {
             ..SimpleFsOptions::default()
         };
 
-        let backing_fs = PhysicalFS { };
+        let backing_fs = PhysicalFS {};
         let result = fuser::mount2(
-            SimpleFS::new(
-                backing_fs,
-                fs_options,
-                key,
-                data_dir,
-            ),
+            SimpleFS::new(backing_fs, fs_options, key, data_dir),
             mountpoint,
             &options,
         );

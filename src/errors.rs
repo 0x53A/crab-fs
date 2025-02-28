@@ -1,7 +1,7 @@
-use std::{io, ops::Deref, sync::PoisonError};
-use libc::c_int;
 use backtrace::Backtrace;
+use libc::c_int;
 use remotefs::RemoteError;
+use std::{io, ops::Deref, sync::PoisonError};
 
 // --------------------------------------------------------------
 
@@ -11,56 +11,71 @@ pub enum ErrorKinds {
     BincodeError(bincode::ErrorKind),
     PoisonError,
     C_Int(c_int),
-    RemoteError(RemoteError)
+    RemoteError(RemoteError),
 }
 
 #[derive(Debug)]
 pub struct MyError {
     err: ErrorKinds,
-    trace: Backtrace
+    trace: Backtrace,
 }
 
 impl From<io::Error> for MyError {
     fn from(error: io::Error) -> Self {
-        MyError{err:ErrorKinds::IOError(error), trace: Backtrace::new()}
+        MyError {
+            err: ErrorKinds::IOError(error),
+            trace: Backtrace::new(),
+        }
     }
 }
 
 impl From<bincode::ErrorKind> for MyError {
     fn from(error: bincode::ErrorKind) -> Self {
-        MyError{err:ErrorKinds::BincodeError(error), trace: Backtrace::new()}
+        MyError {
+            err: ErrorKinds::BincodeError(error),
+            trace: Backtrace::new(),
+        }
     }
 }
 
 impl From<Box<bincode::ErrorKind>> for MyError {
     fn from(error: Box<bincode::ErrorKind>) -> Self {
-        MyError{err:ErrorKinds::BincodeError(*error), trace: Backtrace::new()}
+        MyError {
+            err: ErrorKinds::BincodeError(*error),
+            trace: Backtrace::new(),
+        }
     }
 }
 
 impl From<i32> for MyError {
     fn from(c_int: i32) -> Self {
-        MyError{err:ErrorKinds::C_Int(c_int), trace: Backtrace::new()}
+        MyError {
+            err: ErrorKinds::C_Int(c_int),
+            trace: Backtrace::new(),
+        }
     }
 }
 
 impl From<RemoteError> for MyError {
     fn from(error: RemoteError) -> Self {
-        MyError{err:ErrorKinds::RemoteError(error), trace: Backtrace::new()}
+        MyError {
+            err: ErrorKinds::RemoteError(error),
+            trace: Backtrace::new(),
+        }
     }
 }
 
 impl<T> From<PoisonError<T>> for MyError {
     fn from(p: PoisonError<T>) -> Self {
-        MyError{err:ErrorKinds::PoisonError, trace: Backtrace::new()}
+        MyError {
+            err: ErrorKinds::PoisonError,
+            trace: Backtrace::new(),
+        }
     }
 }
 // ----------------------------------------------------------------
 
-impl ErrorKinds {
-
-
-}
+impl ErrorKinds {}
 
 impl Deref for ErrorKinds {
     type Target = c_int;
@@ -69,11 +84,10 @@ impl Deref for ErrorKinds {
         // Keep a static c_int for each error case that we can return a reference to
         static IO_ERROR: c_int = libc::EIO;
         static ENCODE_ERROR: c_int = libc::EINVAL;
-        
+
         // Map different error kinds to appropriate error codes
         match self {
-            ErrorKinds::BincodeError(bincode::ErrorKind::Io(e)) |
-            ErrorKinds::IOError(e) => {
+            ErrorKinds::BincodeError(bincode::ErrorKind::Io(e)) | ErrorKinds::IOError(e) => {
                 // For IO errors, try to map the OS error code if available
                 if let Some(err_code) = e.raw_os_error() {
                     // Need to store in a static to return reference
@@ -85,9 +99,9 @@ impl Deref for ErrorKinds {
                         &OS_ERROR
                     }
                 } else {
-                    return &IO_ERROR
+                    return &IO_ERROR;
                 }
-            },
+            }
             ErrorKinds::BincodeError(b) => return &ENCODE_ERROR,
             ErrorKinds::C_Int(c) => {
                 // For direct c_int errors, we already have the error code
@@ -107,7 +121,6 @@ impl Deref for ErrorKinds {
 }
 
 impl Deref for MyError {
-    
     type Target = c_int;
 
     fn deref(&self) -> &Self::Target {
@@ -119,4 +132,3 @@ impl Deref for MyError {
 // ----------------------------------------------------------------
 
 pub type MyResult<T> = Result<T, MyError>;
-

@@ -1,7 +1,7 @@
 // Thanks, Claude!
 
-use std::ops::{BitXor, BitOr, Shl, Shr};
 use num_traits::{PrimInt, WrappingAdd};
+use std::ops::{BitOr, BitXor, Shl, Shr};
 
 /// A generic implementation of a Feistel network that works with different integer types
 pub struct FeistelNetwork<T, U>
@@ -16,7 +16,7 @@ where
 
 pub trait FeistelBlock: PrimInt + WrappingAdd {
     type HalfBlock: PrimInt + WrappingAdd;
-    
+
     fn split(self) -> (Self::HalfBlock, Self::HalfBlock);
     fn join(left: Self::HalfBlock, right: Self::HalfBlock) -> Self;
     fn block_size() -> usize;
@@ -25,15 +25,15 @@ pub trait FeistelBlock: PrimInt + WrappingAdd {
 // Implementation for u64/u32 pair
 impl FeistelBlock for u64 {
     type HalfBlock = u32;
-    
+
     fn split(self) -> (Self::HalfBlock, Self::HalfBlock) {
         ((self >> 32) as u32, self as u32)
     }
-    
+
     fn join(left: Self::HalfBlock, right: Self::HalfBlock) -> Self {
         ((left as u64) << 32) | (right as u64)
     }
-    
+
     fn block_size() -> usize {
         64
     }
@@ -42,15 +42,15 @@ impl FeistelBlock for u64 {
 // Implementation for u32/u16 pair
 impl FeistelBlock for u32 {
     type HalfBlock = u16;
-    
+
     fn split(self) -> (Self::HalfBlock, Self::HalfBlock) {
         ((self >> 16) as u16, self as u16)
     }
-    
+
     fn join(left: Self::HalfBlock, right: Self::HalfBlock) -> Self {
         ((left as u32) << 16) | (right as u32)
     }
-    
+
     fn block_size() -> usize {
         32
     }
@@ -59,15 +59,15 @@ impl FeistelBlock for u32 {
 // Implementation for u16/u8 pair
 impl FeistelBlock for u16 {
     type HalfBlock = u8;
-    
+
     fn split(self) -> (Self::HalfBlock, Self::HalfBlock) {
         ((self >> 8) as u8, self as u8)
     }
-    
+
     fn join(left: Self::HalfBlock, right: Self::HalfBlock) -> Self {
         ((left as u16) << 8) | (right as u16)
     }
-    
+
     fn block_size() -> usize {
         16
     }
@@ -83,7 +83,7 @@ where
         if keys.len() != num_rounds {
             panic!("Number of keys must match number of rounds");
         }
-        
+
         FeistelNetwork {
             num_rounds,
             keys,
@@ -134,11 +134,11 @@ mod tests {
     fn test_u64_encryption_decryption() {
         let keys = vec![0x1234u32, 0x5678, 0x9ABC, 0xDEF0];
         let network = FeistelNetwork::<u64, u32>::new(4, keys);
-        
+
         let plaintext = 0x123456789ABCDEF0u64;
         let ciphertext = network.encrypt(plaintext);
         let decrypted = network.decrypt(ciphertext);
-        
+
         assert_eq!(plaintext, decrypted);
     }
 
@@ -146,11 +146,11 @@ mod tests {
     fn test_u32_encryption_decryption() {
         let keys = vec![0x1234u16, 0x5678, 0x9ABC, 0xDEF0];
         let network = FeistelNetwork::<u32, u16>::new(4, keys);
-        
+
         let plaintext = 0x12345678u32;
         let ciphertext = network.encrypt(plaintext);
         let decrypted = network.decrypt(ciphertext);
-        
+
         assert_eq!(plaintext, decrypted);
     }
 
@@ -158,11 +158,11 @@ mod tests {
     fn test_u16_encryption_decryption() {
         let keys = vec![0x12u8, 0x34, 0x56, 0x78];
         let network = FeistelNetwork::<u16, u8>::new(4, keys);
-        
+
         let plaintext = 0x1234u16;
         let ciphertext = network.encrypt(plaintext);
         let decrypted = network.decrypt(ciphertext);
-        
+
         assert_eq!(plaintext, decrypted);
     }
 }
