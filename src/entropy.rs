@@ -55,7 +55,7 @@ pub fn rng_from_entropy(entropy: &[u8]) -> ChaCha20Rng {
     // Hash the entropy into a 32-byte seed using SHA-256
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
-    hasher.update(&entropy);
+    hasher.update(entropy);
     let seed = hasher.finalize();
 
     // Create an RNG from the seed
