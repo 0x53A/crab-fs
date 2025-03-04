@@ -332,6 +332,7 @@ impl<F: FS> BlockChunkWriter<F> {
         Ok(())
     }
 
+    /// copy data from the other chunk into this chunk
     pub fn copy_data(
         &mut self,
         source: &mut BlockChunkWriter<F>,

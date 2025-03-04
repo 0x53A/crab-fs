@@ -158,7 +158,6 @@ impl InMemoryFsData {
         Ok(())
     }
 
-    // Create a file, also creating parent directories if needed
     fn create_file(&mut self, path: &[InMemoryPathSegment]) -> MyResult<&mut FileEntry> {
         if path.is_empty() {
             return Err(io::Error::new(
@@ -171,41 +170,26 @@ impl InMemoryFsData {
         let dir_path = &path[0..path.len() - 1];
         let file_name = &path[path.len() - 1];
 
-        // Create parent directories
-        self.create_directories(dir_path)?;
-
         // Get the parent directory
         let dir = self.get_directory_entry_mut(dir_path)?;
 
         // Create the file if it doesn't exist
-        let file_entry = dir
+        let mut file_entry = dir
             .files
-            .entry(file_name.clone())
-            .or_insert_with(FileEntry::new);
+            .entry(file_name.clone());
 
-        Ok(file_entry)
-    }
+        match &mut file_entry {
+            std::collections::hash_map::Entry::Occupied(ref mut occupied_entry) => {
+                let entry = occupied_entry.get_mut();
+                entry.data.clear();
+                entry.update_modified_time();
+            },
+            std::collections::hash_map::Entry::Vacant(_) => {
+                
+            }
+        };
 
-    // Delete a file, failing if it doesn't exist
-    fn delete_file(&mut self, path: &[InMemoryPathSegment]) -> MyResult<()> {
-        if path.is_empty() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "Cannot delete file with empty path",
-            )
-            .into());
-        }
-
-        let dir_path = &path[0..path.len() - 1];
-        let file_name = &path[path.len() - 1];
-
-        let dir = self.get_directory_entry_mut(dir_path)?;
-
-        if dir.files.remove(file_name).is_none() {
-            return Err(io::Error::new(io::ErrorKind::NotFound, "File not found").into());
-        }
-
-        Ok(())
+        Ok(file_entry.or_insert_with(FileEntry::new))
     }
 
     // Rename a file from one path to another
@@ -239,8 +223,6 @@ impl InMemoryFsData {
         // Create the destination's parent directories if needed
         let to_dir_path = &to_path[0..to_path.len() - 1];
         let to_file_name = &to_path[to_path.len() - 1];
-
-        self.create_directories(to_dir_path)?;
 
         // Get the destination directory and insert the file
         let to_dir = self.get_directory_entry_mut(to_dir_path)?;
@@ -1026,5 +1008,217 @@ mod tests {
 
         // Try to create file in non-existent directory
         assert!(fs.create("nonexistent_dir/file.txt").is_err());
+    }
+}
+
+#[cfg(test)]
+mod additional_tests {
+    use super::*;
+
+    #[test]
+    fn test_write_at_offset() -> MyResult<()> {
+        let fs = InMemoryFS::new();
+        
+        // Create a file with initial content
+        let mut file = fs.create("offset_write.txt")?;
+        file.write_all(b"Hello, Rust")?;
+        file.seek(SeekFrom::Start(7))?;
+        file.write_all(b"World!")?;
+        file.finalize()?;
+        
+        // Read the file back
+        let mut file = fs.open_read("offset_write.txt")?;
+        let mut contents = String::new();
+        file.read_to_string(&mut contents)?;
+        
+        assert_eq!(contents, "Hello, World!");
+        Ok(())
+    }
+    
+    #[test]
+    fn test_read_beyond_eof() -> MyResult<()> {
+        let fs = InMemoryFS::new();
+        
+        // Create a file with some content
+        let mut file = fs.create("small.txt")?;
+        file.write_all(b"abc")?;
+        file.finalize()?;
+        
+        // Try to read beyond EOF
+        let mut file = fs.open_read("small.txt")?;
+        file.seek(SeekFrom::Start(5))?; // Beyond EOF
+        
+        let mut buffer = [0u8; 10];
+        let bytes_read = file.read(&mut buffer)?;
+        
+        assert_eq!(bytes_read, 0); // Should read 0 bytes
+        Ok(())
+    }
+    
+    #[test]
+    fn test_file_truncate() -> MyResult<()> {
+        let fs = InMemoryFS::new();
+        
+        // Create a file with content
+        let mut file = fs.create("truncate.txt")?;
+        file.write_all(b"1234567890")?;
+        
+        // Truncate to shorter length
+        file.set_len(5)?;
+        
+        // Read back and verify
+        let mut file = fs.open_read("truncate.txt")?;
+        let mut contents = String::new();
+        file.read_to_string(&mut contents)?;
+        
+        assert_eq!(contents, "12345");
+        
+        // Truncate to longer length (should zero-fill)
+        let mut file = fs.open_write("truncate.txt")?;
+        file.set_len(8)?;
+        
+        // Read back and verify
+        let mut file = fs.open_read("truncate.txt")?;
+        let mut buffer = vec![0u8; 8];
+        file.read_exact(&mut buffer)?;
+        
+        assert_eq!(&buffer[0..5], b"12345");
+        assert_eq!(&buffer[5..8], &[0, 0, 0]);
+        
+        Ok(())
+    }
+    
+    #[test]
+    fn test_append_mode() -> MyResult<()> {
+        let fs = InMemoryFS::new();
+        
+        // Create a file with initial content
+        let mut file = fs.create("append.txt")?;
+        file.write_all(b"Hello")?;
+        file.finalize()?;
+        
+        // Open file for writing and move to end
+        let mut file = fs.open_write("append.txt")?;
+        file.seek(SeekFrom::End(0))?;
+        file.write_all(b" World")?;
+        file.finalize()?;
+        
+        // Read and verify
+        let mut file = fs.open_read("append.txt")?;
+        let mut contents = String::new();
+        file.read_to_string(&mut contents)?;
+        
+        assert_eq!(contents, "Hello World");
+        Ok(())
+    }
+    
+    #[test]
+    fn test_nested_directory_creation() -> MyResult<()> {
+        let fs = InMemoryFS::new();
+        
+        // Create deeply nested directories
+        fs.create_dir_all("a/b/c/d/e/f/g")?;
+        
+        // Create a file in the deepest directory
+        let mut file = fs.create("a/b/c/d/e/f/g/test.txt")?;
+        file.write_all(b"deep file")?;
+        file.finalize()?;
+        
+        // Read it back
+        let mut file = fs.open_read("a/b/c/d/e/f/g/test.txt")?;
+        let mut contents = String::new();
+        file.read_to_string(&mut contents)?;
+        
+        assert_eq!(contents, "deep file");
+        Ok(())
+    }
+    
+    #[test]
+    fn test_multiple_handles_same_file() -> MyResult<()> {
+        let fs = InMemoryFS::new();
+        
+        // Create file
+        let mut file1 = fs.create("shared.txt")?;
+        file1.write_all(b"Initial content")?;
+        
+        // Open another handle to the same file
+        let mut file2 = fs.open_read("shared.txt")?;
+        
+        // Read from second handle
+        let mut contents = String::new();
+        file2.read_to_string(&mut contents)?;
+        assert_eq!(contents, "Initial content");
+        
+        // Modify file through first handle
+        file1.seek(SeekFrom::Start(0))?;
+        file1.write_all(b"Modified")?;
+        
+        // Read through second handle should see the changes
+        file2.seek(SeekFrom::Start(0))?;
+        contents.clear();
+        file2.read_to_string(&mut contents)?;
+        assert_eq!(contents, "Modified");
+        
+        Ok(())
+    }
+    
+    #[test]
+    fn test_create_with_parent_dirs() -> MyResult<()> {
+        let fs = InMemoryFS::new();
+        
+        // Try creating a file with parent directories that don't exist yet
+        let mut file = fs.create("parent/dir/structure/file.txt")?;
+        file.write_all(b"test content")?;
+        file.finalize()?;
+        
+        // Read it back
+        let mut file = fs.open_read("parent/dir/structure/file.txt")?;
+        let mut contents = String::new();
+        file.read_to_string(&mut contents)?;
+        
+        assert_eq!(contents, "test content");
+        Ok(())
+    }
+    
+    #[test]
+    fn test_overwrite_file() -> MyResult<()> {
+        let fs = InMemoryFS::new();
+        
+        // Create initial file
+        let mut file = fs.create("overwrite.txt")?;
+        file.write_all(b"initial content")?;
+        file.finalize()?;
+        
+        // Create with same name to overwrite
+        let mut file = fs.create("overwrite.txt")?;
+        file.write_all(b"overwritten")?;
+        file.finalize()?;
+        
+        // Verify content was overwritten
+        let mut file = fs.open_read("overwrite.txt")?;
+        let mut contents = String::new();
+        file.read_to_string(&mut contents)?;
+        
+        assert_eq!(contents, "overwritten");
+        Ok(())
+    }
+    
+    #[test]
+    fn test_seek_current_negative() -> MyResult<()> {
+        let fs = InMemoryFS::new();
+        
+        let mut file = fs.create("seek_test.txt")?;
+        file.write_all(b"0123456789")?;
+        
+        // Seek forward, then backward
+        file.seek(SeekFrom::Start(7))?;
+        file.seek(SeekFrom::Current(-5))?;
+        
+        // Read and verify position
+        let mut buf = [0u8; 1];
+        file.read_exact(&mut buf)?;
+        assert_eq!(buf[0], b'2');
+        
+        Ok(())
     }
 }
