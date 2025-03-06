@@ -6,11 +6,12 @@
 #![allow(clippy::unnecessary_cast)] // libc::S_* are u16 or u32 depending on the platform
 #![feature(path_add_extension)]
 #![feature(let_chains)]
+#![feature(assert_matches)]
 
 pub mod crypt;
 pub mod cuttlefish;
 pub mod entropy;
-mod errors;
+pub mod errors;
 pub mod io;
 pub mod repository;
 
@@ -154,8 +155,8 @@ fn main() {
             .expect("incorrect base64 encryption key length");
 
         let data_dir = init.get_one::<String>("data-dir").unwrap().to_string();
-        let backing_fs = PhysicalFS {};
-        let mut fs = SimpleFS::new(backing_fs, SimpleFsOptions::default(), key, data_dir);
+        let backing_fs = PhysicalFS::new(data_dir);
+        let mut fs = SimpleFS::new(backing_fs, SimpleFsOptions::default(), key);
         match fs.create_fs() {
             Ok(_) => {
                 println!("Successfully created filesystem");
@@ -213,9 +214,9 @@ fn main() {
             ..SimpleFsOptions::default()
         };
 
-        let backing_fs = PhysicalFS {};
+        let backing_fs = PhysicalFS::new(data_dir);
         let result = fuser::mount2(
-            SimpleFS::new(backing_fs, fs_options, key, data_dir),
+            SimpleFS::new(backing_fs, fs_options, key),
             mountpoint,
             &options,
         );

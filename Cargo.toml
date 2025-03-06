@@ -26,9 +26,20 @@ generic-array = "1.2.0"
 xts-mode = "0.5.1"
 aes = "0.8.4"
 
+mailboxxy = "0.0.3"
+async-std = "1.13.0"
+smol = "2.0.2"
+tempfile = "3.17.1"
+
 [profile.release]
 lto = true
 strip = true
 
 [build-dependencies]
 pkg-config = { version = "0.3.14", optional = true }
+
+
+[dev-dependencies]
+#mailboxxy = "0.0.2"
+#async-std = "1.13.0"
+#smol = "2.0.2"

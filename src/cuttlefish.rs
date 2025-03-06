@@ -290,7 +290,6 @@ impl<F: FS> SimpleFS<F> {
         fs: F,
         options: SimpleFsOptions,
         encryption_key: [u8; ENCRYPTION_KEY_LENGTH],
-        data_dir: String,
     ) -> SimpleFS<F> {
         let state = {
             let ent = entropy::entropy_from_os();
@@ -306,7 +305,7 @@ impl<F: FS> SimpleFS<F> {
         let repository_options = RepositoryOptions {
             max_inline_content_size: 1024 * 1024, // 1MB
         };
-        let repository = RepositoryV1::new(fs, data_dir.into(), repository_options);
+        let repository = RepositoryV1::new(fs, repository_options);
 
         #[cfg(feature = "abi-7-26")]
         {
@@ -314,7 +313,6 @@ impl<F: FS> SimpleFS<F> {
                 options,
                 state,
                 encryption_key,
-                data_dir,
                 direct_io,
                 suid_support,
             }

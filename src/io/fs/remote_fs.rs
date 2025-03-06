@@ -2,13 +2,14 @@ use std::cell::RefCell;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use crate::errors::MyResult;
 
 use remotefs::fs::{Metadata, ReadStream, UnixPex, WriteStream};
 use remotefs::RemoteFs;
 
-use super::{Capabilities, Finalize, Len, SetLen, FS};
+use super::{Capabilities, Finalize, Len, SetLen, TFile, FS};
 
 pub struct RemoteFsFile<F: RemoteFs> {
     path: PathBuf,
@@ -157,6 +158,8 @@ impl<F: RemoteFs> Finalize for RemoteFsFile<F> {
         Ok(())
     }
 }
+
+impl<F: RemoteFs + Capabilities> TFile for RemoteFsFile<F> {}
 
 #[derive(Clone)]
 pub struct RemoteFsAdapter<T: RemoteFs> {

@@ -361,10 +361,10 @@ pub struct FilesystemWriter<F: FS> {
 }
 
 impl<F: FS> FilesystemWriter<F> {
-    pub fn new(fs: F, data_dir: PathBuf) -> Self {
+    pub fn new(fs: F) -> Self {
         Self {
             fs,
-            data_dir,
+            data_dir: "/".into(), // the FS handles any redirection
             rng: rand::rngs::StdRng::from_entropy(),
             global_lock: RwLock::new(()),
         }
@@ -548,10 +548,10 @@ pub struct RepositoryV1<F: FS> {
 }
 
 impl<F: FS> RepositoryV1<F> {
-    pub fn new(fs: F, data_dir: PathBuf, options: RepositoryOptions) -> Self {
+    pub fn new(fs: F, options: RepositoryOptions) -> Self {
         Self {
             options,
-            writer: FilesystemWriter::new(fs, data_dir),
+            writer: FilesystemWriter::new(fs),
         }
     }
 
