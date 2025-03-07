@@ -1,13 +1,13 @@
-use std::assert_matches::assert_matches;
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
-use crate::errors::{MyError, MyResult};
+use crab_fs_common::errors::{MyError, MyResult};
 
-use super::{Capabilities, Finalize, Len, SetLen, SimpleSnapshot, Snapshottable, TFile, FS};
+use crab_fs_common::io::fs::{
+    Capabilities, Finalize, Len, SetLen, SimpleSnapshot, Snapshottable, TFile, FS,
+};
 
 // ------------------------
 
@@ -148,29 +148,6 @@ impl PhysicalFS {
     }
 }
 
-impl Len for std::fs::File {
-    fn len(&mut self) -> MyResult<u64> {
-        return Ok((self as &std::fs::File).metadata()?.len());
-    }
-}
-
-impl SetLen for std::fs::File {
-    fn set_len(&mut self, size: u64) -> MyResult<()> {
-        (self as &std::fs::File).set_len(size)?;
-        Ok(())
-    }
-}
-
-impl Finalize for std::fs::File {
-    fn finalize(&mut self) -> MyResult<()> {
-        (self as &std::fs::File).flush()?;
-        Ok(())
-    }
-}
-
-
-impl TFile for std::fs::File {}
-
 impl Capabilities for PhysicalFS {
     fn can_mutate(&self) -> bool {
         true
@@ -191,27 +168,31 @@ impl Capabilities for PhysicalFS {
 
 impl PhysicalFS {
     pub fn to_host_path<P: AsRef<Path>>(&self, path: P) -> MyResult<PathBuf> {
-
         let path = path.as_ref();
 
         let path = if path.is_relative() {
             self.root.join(path)
         } else {
-            let relative = path.strip_prefix("/").map_err(|e| MyError::new_io(io::ErrorKind::InvalidInput, e))?;
+            let relative = path
+                .strip_prefix("/")
+                .map_err(|e| MyError::new_io(io::ErrorKind::InvalidInput, e))?;
             self.root.join(relative)
         };
 
         let path = Self::normalize_path(&path);
-        
+
         match path.strip_prefix(&self.root) {
             Ok(_) => Ok(path),
-            Err(_) => Err(MyError::new_io(io::ErrorKind::InvalidInput, "Path is outside of root")),
+            Err(_) => Err(MyError::new_io(
+                io::ErrorKind::InvalidInput,
+                "Path is outside of root",
+            )),
         }
     }
 
     fn normalize_path(path: &Path) -> PathBuf {
         let mut result = PathBuf::new();
-        
+
         for component in path.components() {
             match component {
                 std::path::Component::ParentDir => {
@@ -220,30 +201,32 @@ impl PhysicalFS {
                         // Just keep the parent dir in this case
                         result.push(component);
                     }
-                },
+                }
                 std::path::Component::CurDir => {
                     // Skip current directory components
-                },
+                }
                 _ => result.push(component),
             }
         }
-        
+
         result
     }
-    
+
     // pub fn from_host_path<P: AsRef<Path>>(&self, path: P) -> MyResult<PathBuf> {
     //     todo!()
     // }
 }
-
 
 pub fn test_to_host_path_case(expected: Option<&str>, input: &str) {
     let fs = PhysicalFS::new("/data");
     let result = fs.to_host_path(input);
     match (expected, &result) {
         (Some(exp), Ok(path)) => assert_eq!(exp, path.to_str().unwrap()),
-        (None, Err(_)) => {},  // Expected when input should fail
-        _ => panic!("Unexpected result: expected {:?} but got {:?}", expected, result),
+        (None, Err(_)) => {} // Expected when input should fail
+        _ => panic!(
+            "Unexpected result: expected {:?} but got {:?}",
+            expected, result
+        ),
     }
 }
 
@@ -252,19 +235,19 @@ pub fn test_to_host_path() {
     // Test absolute paths
     test_to_host_path_case(Some("/data/test.txt"), "/test.txt");
     test_to_host_path_case(Some("/data/dir/test.txt"), "/dir/test.txt");
-    
+
     // Test relative paths
     test_to_host_path_case(Some("/data/test.txt"), "test.txt");
     test_to_host_path_case(Some("/data/dir/test.txt"), "dir/test.txt");
-    
+
     // Test path normalization
     test_to_host_path_case(Some("/data/dir/test.txt"), "/dir/./test.txt");
     test_to_host_path_case(Some("/data/test.txt"), "/dir/../test.txt");
-    
+
     // Test edge cases
     test_to_host_path_case(Some("/data"), "");
     test_to_host_path_case(Some("/data"), "/");
-    
+
     // Test paths that should fail (attempts to escape root directory)
     test_to_host_path_case(None, "../outside.txt");
     test_to_host_path_case(None, "/../outside.txt");
@@ -301,12 +284,16 @@ impl FS for PhysicalFS {
     }
 
     fn open_read<P: AsRef<Path>>(&self, path: P) -> MyResult<Self::File> {
-        let file = OpenOptions::new().read(true).open(self.to_host_path(path)?)?;
+        let file = OpenOptions::new()
+            .read(true)
+            .open(self.to_host_path(path)?)?;
         Ok(file)
     }
 
     fn open_write<P: AsRef<Path>>(&self, path: P) -> MyResult<Self::File> {
-        let file = OpenOptions::new().write(true).open(self.to_host_path(path)?)?;
+        let file = OpenOptions::new()
+            .write(true)
+            .open(self.to_host_path(path)?)?;
         Ok(file)
     }
 

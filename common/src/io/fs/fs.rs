@@ -1,9 +1,6 @@
-use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
-use std::fs::{self, File, OpenOptions};
-use std::io::{self, Read, Seek, SeekFrom, Write};
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::io::{self, Read, Seek, Write};
+use std::path::Path;
 
 use crate::errors::{MyError, MyResult};
 
@@ -186,3 +183,27 @@ pub fn get_snapshot_delta(before: &dyn Snapshot, after: &dyn Snapshot) -> Box<[C
 // fn dummy_FS_dyn(fs: Box<dyn DynCompatibleFS>) {
 
 // }
+
+// ------------------------------------------------------------------------------------------------------------------------
+
+impl Len for std::fs::File {
+    fn len(&mut self) -> MyResult<u64> {
+        return Ok((self as &std::fs::File).metadata()?.len());
+    }
+}
+
+impl SetLen for std::fs::File {
+    fn set_len(&mut self, size: u64) -> MyResult<()> {
+        (self as &std::fs::File).set_len(size)?;
+        Ok(())
+    }
+}
+
+impl Finalize for std::fs::File {
+    fn finalize(&mut self) -> MyResult<()> {
+        (self as &std::fs::File).flush()?;
+        Ok(())
+    }
+}
+
+impl TFile for std::fs::File {}

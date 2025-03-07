@@ -1,11 +1,8 @@
-use std::cell::RefCell;
-use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::errors::MyResult;
-
-use super::{Capabilities, Finalize, Len, SetLen, TFile, FS};
+use crate::io::fs::{Capabilities, Finalize, Len, SetLen, TFile, FS};
 
 #[derive(Clone)]
 pub struct DummyFile {}
@@ -17,7 +14,7 @@ impl DummyFile {
 }
 
 impl Read for DummyFile {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+    fn read(&mut self, _buf: &mut [u8]) -> io::Result<usize> {
         Err(io::Error::new(
             io::ErrorKind::Other,
             "This is a dummy file and can't be used",
@@ -26,7 +23,7 @@ impl Read for DummyFile {
 }
 
 impl Write for DummyFile {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+    fn write(&mut self, _buf: &[u8]) -> io::Result<usize> {
         Err(io::Error::new(
             io::ErrorKind::Other,
             "This is a dummy file and can't be used",
@@ -42,7 +39,7 @@ impl Write for DummyFile {
 }
 
 impl Seek for DummyFile {
-    fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
+    fn seek(&mut self, _pos: SeekFrom) -> io::Result<u64> {
         Err(io::Error::new(
             io::ErrorKind::Other,
             "This is a dummy file and can't be used",
@@ -60,7 +57,7 @@ impl Len for DummyFile {
 }
 
 impl SetLen for DummyFile {
-    fn set_len(&mut self, size: u64) -> MyResult<()> {
+    fn set_len(&mut self, _size: u64) -> MyResult<()> {
         Err(io::Error::new(
             io::ErrorKind::Other,
             "This is a dummy file and can't be used",
@@ -120,7 +117,7 @@ impl FS for DummyFS {
         Ok(DummyFile::new())
     }
 
-    fn zero_file_range(&self, file: &Self::File, offset: u64, len: u64) -> MyResult<()> {
+    fn zero_file_range(&self, _file: &Self::File, _offset: u64, _len: u64) -> MyResult<()> {
         Ok(())
     }
 
@@ -128,8 +125,8 @@ impl FS for DummyFS {
         &self,
         _src_file: &Self::File,
         _src_offset: u64,
-        dst_file: &Self::File,
-        dst_offset: u64,
+        _dst_file: &Self::File,
+        _dst_offset: u64,
         len: u64,
     ) -> MyResult<u64> {
         Ok(len)

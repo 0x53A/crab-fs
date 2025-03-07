@@ -16,8 +16,8 @@ pub enum ErrorKinds {
 
 #[derive(Debug)]
 pub struct MyError {
-    err: ErrorKinds,
-    trace: Backtrace,
+    pub err: ErrorKinds,
+    pub trace: Backtrace,
 }
 
 impl MyError {
@@ -78,7 +78,7 @@ impl From<RemoteError> for MyError {
 }
 
 impl<T> From<PoisonError<T>> for MyError {
-    fn from(p: PoisonError<T>) -> Self {
+    fn from(_p: PoisonError<T>) -> Self {
         MyError {
             err: ErrorKinds::PoisonError,
             trace: Backtrace::new(),

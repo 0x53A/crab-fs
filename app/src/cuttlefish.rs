@@ -63,16 +63,6 @@ use crate::repository;
 
 use repository::repository_v1::*;
 
-impl From<FileKind> for fuser::FileType {
-    fn from(kind: FileKind) -> Self {
-        match kind {
-            FileKind::File => fuser::FileType::RegularFile,
-            FileKind::Directory => fuser::FileType::Directory,
-            FileKind::Symlink => fuser::FileType::Symlink,
-        }
-    }
-}
-
 #[derive(Debug)]
 enum XattrNamespace {
     Security,
@@ -187,14 +177,6 @@ fn time_now() -> (i64, u32) {
     time_from_system_time(&SystemTime::now())
 }
 
-fn system_time_from_time(secs: i64, nsecs: u32) -> SystemTime {
-    if secs >= 0 {
-        UNIX_EPOCH + Duration::new(secs as u64, nsecs)
-    } else {
-        UNIX_EPOCH - Duration::new((-secs) as u64, nsecs)
-    }
-}
-
 fn time_from_system_time(system_time: &SystemTime) -> (i64, u32) {
     // Convert to signed 64-bit time with epoch at 0
     match system_time.duration_since(UNIX_EPOCH) {
@@ -203,37 +185,6 @@ fn time_from_system_time(system_time: &SystemTime) -> (i64, u32) {
             -(before_epoch_error.duration().as_secs() as i64),
             before_epoch_error.duration().subsec_nanos(),
         ),
-    }
-}
-
-impl From<InodeAttributes> for fuser::FileAttr {
-    fn from(attrs: InodeAttributes) -> Self {
-        return (&attrs).into();
-    }
-}
-
-impl From<&InodeAttributes> for fuser::FileAttr {
-    fn from(attrs: &InodeAttributes) -> Self {
-        fuser::FileAttr {
-            ino: attrs.inode,
-            size: attrs.size,
-            blocks: attrs.size.div_ceil(BLOCK_SIZE),
-            atime: system_time_from_time(attrs.last_accessed.0, attrs.last_accessed.1),
-            mtime: system_time_from_time(attrs.last_modified.0, attrs.last_modified.1),
-            ctime: system_time_from_time(
-                attrs.last_metadata_changed.0,
-                attrs.last_metadata_changed.1,
-            ),
-            crtime: SystemTime::UNIX_EPOCH, // todo(macos)
-            kind: attrs.kind.into(),
-            perm: attrs.mode,
-            nlink: attrs.hardlinks,
-            uid: attrs.uid,
-            gid: attrs.gid,
-            rdev: 0, // todo(??)
-            blksize: BLOCK_SIZE as u32,
-            flags: 0, // todo(macos)
-        }
     }
 }
 

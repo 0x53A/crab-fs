@@ -4,9 +4,4 @@
 #![feature(let_chains)]
 #![feature(assert_matches)]
 
-pub mod crypt;
-pub mod cuttlefish;
-pub mod entropy;
-pub mod errors;
-pub mod io;
-pub mod repository;
+pub mod repository_v1;

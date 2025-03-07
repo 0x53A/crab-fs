@@ -5,16 +5,16 @@ use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 use std::vec;
 
-use crab_fs::errors::{MyError, MyResult};
-use crab_fs::io::fs::{Capabilities, Finalize, Len, SetLen, Snapshot, FS};
+use crab_fs_common::errors::{MyError, MyResult};
+use crab_fs_common::io::fs::{Capabilities, Finalize, Len, SetLen, Snapshot, FS};
 
-use crab_fs::io::fs::SimpleSnapshot;
-use crab_fs::io::fs::Snapshottable;
+use crab_fs_common::io::fs::SimpleSnapshot;
+use crab_fs_common::io::fs::Snapshottable;
 
 type InMemoryPathSegment = Box<[u8]>;
 type InMemoryPath = [InMemoryPathSegment];
 
-use crab_fs::io::fs::InMemoryFS;
+use crab_fs_backend::io::fs::InMemoryFS;
 
 #[cfg(test)]
 mod tests {

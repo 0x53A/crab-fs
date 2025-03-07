@@ -1,0 +1,21 @@
+[package]
+name = "crab-fs-repository"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serde = { version = "1.0.215", features = ["std", "derive"] }
+rand = "0.8.5"
+crab-fs-common = { path = "../common" }
+bincode = "1.3.3"
+blake3 = "1.5.4"
+libc = "0.2.165"
+
+[features]
+default	= []
+fuser-traits = [ "fuser" ]
+
+[dependencies.fuser]
+version = "0.15.0"
+features = [ "abi-7-28" ]
+optional = true

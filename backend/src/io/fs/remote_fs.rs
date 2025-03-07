@@ -4,12 +4,12 @@ use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use crate::errors::MyResult;
+use crab_fs_common::errors::MyResult;
 
 use remotefs::fs::{Metadata, ReadStream, UnixPex, WriteStream};
 use remotefs::RemoteFs;
 
-use super::{Capabilities, Finalize, Len, SetLen, TFile, FS};
+use crab_fs_common::io::fs::{Capabilities, Finalize, Len, SetLen, TFile, FS};
 
 pub struct RemoteFsFile<F: RemoteFs> {
     path: PathBuf,

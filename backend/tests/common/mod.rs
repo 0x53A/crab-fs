@@ -2,10 +2,8 @@
 
 use mailboxxy::{MailboxContext, ReplyChannel};
 
-extern crate crab_fs;
-
-use crab_fs::errors::{MyError, MyResult};
-use crab_fs::io::fs::{Capabilities, Finalize, Len, SetLen, TFile, FS};
+use crab_fs_common::errors::{MyError, MyResult};
+use crab_fs_common::io::fs::{Capabilities, Finalize, Len, SetLen, TFile, FS};
 use std::collections::HashMap;
 use std::io;
 use std::path::PathBuf;

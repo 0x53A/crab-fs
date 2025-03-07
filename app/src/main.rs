@@ -8,12 +8,25 @@
 #![feature(let_chains)]
 #![feature(assert_matches)]
 
-pub mod crypt;
+pub mod crypt {
+    pub use crab_fs_common::crypt::*;
+}
 pub mod cuttlefish;
-pub mod entropy;
-pub mod errors;
-pub mod io;
-pub mod repository;
+pub mod entropy {
+    pub use crab_fs_common::entropy::*;
+}
+pub mod errors {
+    pub use crab_fs_common::errors::*;
+}
+pub mod io {
+    pub mod fs {
+        pub use crab_fs_backend::io::fs::*;
+        pub use crab_fs_common::io::fs::*;
+    }
+}
+pub mod repository {
+    pub use crab_fs_repository::*;
+}
 
 use cuttlefish::{SimpleFS, SimpleFsOptions};
 

@@ -5,11 +5,10 @@ use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 use std::vec;
 
-use crate::errors::{MyError, MyResult};
-use crate::io::fs::{Capabilities, Finalize, Len, SetLen, Snapshot, FS};
-
-use super::SimpleSnapshot;
-use super::Snapshottable;
+use crab_fs_common::errors::{MyError, MyResult};
+use crab_fs_common::io::fs::{
+    Capabilities, Finalize, Len, SetLen, SimpleSnapshot, Snapshot, Snapshottable, TFile, FS,
+};
 
 type InMemoryPathSegment = Box<[u8]>;
 type InMemoryPath = [InMemoryPathSegment];
@@ -533,7 +532,7 @@ impl Drop for InMemoryFileHandle {
     }
 }
 
-impl super::TFile for InMemoryFileHandle {}
+impl TFile for InMemoryFileHandle {}
 
 impl Capabilities for InMemoryFS {
     fn can_mutate(&self) -> bool {

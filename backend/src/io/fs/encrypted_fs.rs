@@ -10,10 +10,10 @@ use aes::{
 use sha2::{Digest, Sha256};
 use xts_mode::Xts128;
 
-use crate::errors::MyResult;
-use crate::io::fs::{Capabilities, Finalize, Len, SetLen, FS};
+use crab_fs_common::errors::MyResult;
+use crab_fs_common::io::fs::{Capabilities, Finalize, Len, SetLen, FS};
 
-use super::{Snapshottable, TFile};
+use crab_fs_common::io::fs::{Snapshottable, TFile};
 
 const BLOCK_SIZE: usize = 4096; // Use 4KB blocks for optimal performance
 
@@ -23,11 +23,11 @@ type Aes256Xts = Xts128<Aes256>;
 /// -----------------------
 /// Header (32 bytes):
 ///   - Key validation hash
-/// 
+///
 /// For each 4KB block:
 ///   - Length prefix (4 bytes, little-endian u32)
 ///   - Encrypted data (multiple of 16 bytes, AES blocks)
-/// 
+///
 /// Each AES block uses a unique tweak derived from:
 ///   - Block index
 ///   - Sub-block index within 4KB block
@@ -38,18 +38,16 @@ mod spec {
         length: u32,
         data: [u8; super::BLOCK_SIZE],
     }
-    
+
     struct Header {
         key_validation_hash: [u8; 32],
     }
-    
+
     struct File {
         header: Header,
-        blocks: [DataBlock; 0]
+        blocks: [DataBlock; 0],
     }
-
 }
-    
 
 struct EncryptionEngine {
     cipher: Aes256Xts,
@@ -59,7 +57,6 @@ struct EncryptionEngine {
 pub const AES_BLOCK_SIZE: usize = 16;
 
 impl EncryptionEngine {
-
     fn new(password: &[u8]) -> Self {
         // Derive a 512-bit key (two 256-bit keys required by AES-XTS)
         let mut hasher = Sha256::new();
@@ -89,14 +86,16 @@ impl EncryptionEngine {
         }
     }
 
-   fn encrypt_block(&self, block_idx: u64, data: &[u8]) -> Vec<u8> {
+    fn encrypt_block(&self, block_idx: u64, data: &[u8]) -> Vec<u8> {
         if data.is_empty() {
             return Vec::new();
         }
 
         // Store original length
         let original_len = data.len();
-        let mut result = Vec::with_capacity(4 + original_len + (AES_BLOCK_SIZE - (original_len % AES_BLOCK_SIZE)));
+        let mut result = Vec::with_capacity(
+            4 + original_len + (AES_BLOCK_SIZE - (original_len % AES_BLOCK_SIZE)),
+        );
         result.extend_from_slice(&(original_len as u32).to_le_bytes());
 
         // Process data in AES blocks
@@ -105,7 +104,7 @@ impl EncryptionEngine {
             let mut buffer = vec![0u8; AES_BLOCK_SIZE];
             let start = i * AES_BLOCK_SIZE;
             let end = std::cmp::min(start + AES_BLOCK_SIZE, original_len);
-            buffer[..end-start].copy_from_slice(&data[start..end]);
+            buffer[..end - start].copy_from_slice(&data[start..end]);
 
             // Create unique tweak for each AES block
             let mut tweak = [0u8; 16];
@@ -126,8 +125,10 @@ impl EncryptionEngine {
 
         // Get original length
         let original_len = u32::from_le_bytes([
-            encrypted_data[0], encrypted_data[1], 
-            encrypted_data[2], encrypted_data[3]
+            encrypted_data[0],
+            encrypted_data[1],
+            encrypted_data[2],
+            encrypted_data[3],
         ]) as usize;
 
         let mut result = Vec::with_capacity(original_len);
@@ -148,10 +149,12 @@ impl EncryptionEngine {
             tweak[..8].copy_from_slice(&block_num.to_le_bytes());
 
             self.cipher.decrypt_sector(&mut buffer, tweak);
-            result.extend(&buffer[..std::cmp::min(
-                AES_BLOCK_SIZE,
-                original_len.saturating_sub(i * AES_BLOCK_SIZE)
-            )]);
+            result.extend(
+                &buffer[..std::cmp::min(
+                    AES_BLOCK_SIZE,
+                    original_len.saturating_sub(i * AES_BLOCK_SIZE),
+                )],
+            );
         }
 
         result.truncate(original_len);
@@ -270,10 +273,9 @@ impl<F: TFile> EncryptedFile<F> {
 
         // If we read any data, decrypt it
         if bytes_read > 0 {
-            let decrypted = self.engine.decrypt_block(
-                block_idx, 
-                &content.block_buffer[..bytes_read]
-            );
+            let decrypted = self
+                .engine
+                .decrypt_block(block_idx, &content.block_buffer[..bytes_read]);
             content.block_buffer[..decrypted.len()].copy_from_slice(&decrypted);
         }
 
@@ -338,11 +340,13 @@ impl<F: TFile> Read for &EncryptedFile<F> {
             // Get needed values under a single borrow
             let (need_load, block_idx, pos, current_pos, file_length) = {
                 let content = self.content.borrow();
-                (!content.buffer_valid || content.buffer_position >= BLOCK_SIZE,
-                 content.current_block_idx,
-                 content.buffer_position,
-                 self.position(&content),
-                 content.file_length)
+                (
+                    !content.buffer_valid || content.buffer_position >= BLOCK_SIZE,
+                    content.current_block_idx,
+                    content.buffer_position,
+                    self.position(&content),
+                    content.file_length,
+                )
             };
 
             // If at EOF, break
@@ -363,11 +367,12 @@ impl<F: TFile> Read for &EncryptedFile<F> {
                 let remaining_in_file = content.file_length.saturating_sub(current_pos);
                 let can_read = std::cmp::min(
                     std::cmp::min(available, buf.len() - bytes_read),
-                    remaining_in_file as usize
+                    remaining_in_file as usize,
                 );
 
                 buf[bytes_read..bytes_read + can_read].copy_from_slice(
-                    &content.block_buffer[content.buffer_position..content.buffer_position + can_read]
+                    &content.block_buffer
+                        [content.buffer_position..content.buffer_position + can_read],
                 );
                 can_read
             };
@@ -644,7 +649,7 @@ impl<T: FS> FS for EncryptedFS<T> {
                 let mut header = [0u8; 32];
                 existing.read_exact(&mut header)?;
                 drop(existing); // Close read handle
-                
+
                 // Now open for writing
                 let inner_file = self.inner.open_write(path)?;
                 EncryptedFile::new(inner_file, self.engine.clone())
@@ -758,7 +763,6 @@ impl<T: Snapshottable + FS> Snapshottable for EncryptedFS<T> {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -769,87 +773,88 @@ mod tests {
     fn test_encrypted_fs_small_files() {
         let memory = InMemoryFS::new();
         let encrypted = EncryptedFS::new(memory, b"test password");
-        
+
         // Test with very small file (smaller than AES block)
         let mut file = encrypted.create("small.txt").unwrap();
         file.write_all(b"Hello").unwrap();
         file.finalize().unwrap();
-        
+
         let mut read_file = encrypted.open_read("small.txt").unwrap();
         let mut content = Vec::new();
         read_file.read_to_end(&mut content).unwrap();
         assert_eq!(content, b"Hello");
     }
-    
+
     #[test]
     fn test_encrypted_fs_empty_files() {
         let memory = InMemoryFS::new();
         let encrypted = EncryptedFS::new(memory, b"test password");
-        
+
         // Empty files should work
         let mut file = encrypted.create("empty.txt").unwrap();
         file.finalize().unwrap();
-        
+
         let mut read_file = encrypted.open_read("empty.txt").unwrap();
         let mut content = Vec::new();
         read_file.read_to_end(&mut content).unwrap();
         assert_eq!(content.len(), 0);
     }
-    
+
     #[test]
     fn test_encrypted_fs_handles_truncation() {
         let memory = InMemoryFS::new();
         let encrypted = EncryptedFS::new(memory, b"test password");
-        
+
         // Create and truncate
         let mut file = encrypted.create("truncate.txt").unwrap();
-        file.write_all(b"This is some text that will be truncated").unwrap();
+        file.write_all(b"This is some text that will be truncated")
+            .unwrap();
         file.set_len(10).unwrap();
         file.finalize().unwrap();
-        
+
         let mut read_file = encrypted.open_read("truncate.txt").unwrap();
         let mut content = Vec::new();
         read_file.read_to_end(&mut content).unwrap();
         assert_eq!(content, b"This is so");
     }
-    
+
     #[test]
     fn test_encrypted_fs_append() {
         let memory = InMemoryFS::new();
         let encrypted = EncryptedFS::new(memory, b"test password");
-        
+
         // Create initial file
         let mut file = encrypted.create("append.txt").unwrap();
         file.write_all(b"Initial").unwrap();
         file.finalize().unwrap();
-        
+
         // Append to it
         let mut file = encrypted.open_write("append.txt").unwrap();
         file.seek(SeekFrom::End(0)).unwrap();
         file.write_all(b" content").unwrap();
         file.finalize().unwrap();
-        
+
         // Read back complete content
         let mut read_file = encrypted.open_read("append.txt").unwrap();
         let mut content = Vec::new();
         read_file.read_to_end(&mut content).unwrap();
         assert_eq!(content, b"Initial content");
     }
-    
+
     #[test]
     fn test_encrypted_fs_partial_block_update() {
         let memory = InMemoryFS::new();
         let encrypted = EncryptedFS::new(memory, b"test password");
-        
+
         // Write some data
         let mut file = encrypted.create("partial.txt").unwrap();
         file.write_all(b"ABCDEFGHIJKLMNOPQRSTUVWXYZ").unwrap();
-        
+
         // Seek to middle and update
         file.seek(SeekFrom::Start(10)).unwrap();
         file.write_all(b"XYZ").unwrap();
         file.finalize().unwrap();
-        
+
         // Verify content
         let mut read_file = encrypted.open_read("partial.txt").unwrap();
         let mut content = Vec::new();
@@ -857,152 +862,153 @@ mod tests {
         assert_eq!(content, b"ABCDEFGHIJXYZMNOPQRSTUVWXYZ");
     }
 
-
-
     #[test]
     fn test_encrypted_fs_block_aligned_file() {
         let memory = InMemoryFS::new();
         let encrypted = EncryptedFS::new(memory, b"test password");
-        
+
         // Test with exactly 16 bytes (AES block size)
         let mut file = encrypted.create("block.txt").unwrap();
         file.write_all(b"0123456789ABCDEF").unwrap();
         file.finalize().unwrap();
-        
+
         let mut read_file = encrypted.open_read("block.txt").unwrap();
         let mut content = Vec::new();
         read_file.read_to_end(&mut content).unwrap();
         assert_eq!(content, b"0123456789ABCDEF");
     }
-    
+
     #[test]
     fn test_encrypted_fs_large_file() {
         let memory = InMemoryFS::new();
         let encrypted = EncryptedFS::new(memory, b"test password");
-        
+
         // Create a file larger than block size
         let mut file = encrypted.create("large.txt").unwrap();
         let data: Vec<u8> = (0..8192).map(|i| (i % 256) as u8).collect();
         file.write_all(&data).unwrap();
         file.finalize().unwrap();
-        
+
         // Read it back
         let mut read_file = encrypted.open_read("large.txt").unwrap();
         let mut content = Vec::new();
         read_file.read_to_end(&mut content).unwrap();
         assert_eq!(content, data);
     }
-    
+
     #[test]
     fn test_encrypted_fs_wrong_password() {
         let memory = InMemoryFS::new();
-        
+
         // Create a file with one password
         let encrypted1 = EncryptedFS::new(memory.clone(), b"password1");
         let mut file = encrypted1.create("secret.txt").unwrap();
         file.write_all(b"0123456789ABCDEF").unwrap();
         file.finalize().unwrap();
-        
+
         // Try to open with wrong password
         let encrypted2 = EncryptedFS::new(memory, b"password2");
         let result = encrypted2.open_read("secret.txt");
         assert!(result.is_err());
     }
-    
+
     #[test]
     fn test_encrypted_fs_seek_and_read() {
         let memory = InMemoryFS::new();
         let encrypted = EncryptedFS::new(memory, b"test password");
-        
+
         // Create file with some content
         let mut file = encrypted.create("seek.txt").unwrap();
         file.write_all(b"ABCDEFGHIJKLMNOPQRSTUVWXYZ").unwrap();
         file.finalize().unwrap();
-        
+
         // Open for reading
         let mut read_file = encrypted.open_read("seek.txt").unwrap();
-        
+
         // Seek to different positions and read
         read_file.seek(SeekFrom::Start(10)).unwrap();
         let mut buf = [0u8; 5];
         read_file.read_exact(&mut buf).unwrap();
         assert_eq!(&buf, b"KLMNO");
-        
+
         // Seek from current position
         read_file.seek(SeekFrom::Current(2)).unwrap();
         read_file.read_exact(&mut buf).unwrap();
         assert_eq!(&buf, b"RSTUV");
-        
+
         // Seek from end
         read_file.seek(SeekFrom::End(-4)).unwrap();
         read_file.read_exact(&mut buf[0..4]).unwrap();
         assert_eq!(&buf[0..4], b"WXYZ");
     }
-    
+
     #[test]
     fn test_encrypted_fs_read_write_chunks() {
         let memory = InMemoryFS::new();
         let encrypted = EncryptedFS::new(memory, b"test password");
-        
+
         // Create a file
         let mut file = encrypted.create("chunks.txt").unwrap();
-        
+
         // Write data in chunks that span across blocks
         let chunk1 = vec![1u8; 3000];
         let chunk2 = vec![2u8; 3000];
         let chunk3 = vec![3u8; 3000];
-        
+
         file.write_all(&chunk1).unwrap();
         file.write_all(&chunk2).unwrap();
         file.write_all(&chunk3).unwrap();
         file.finalize().unwrap();
-        
+
         // Read in chunks and verify
         let mut read_file = encrypted.open_read("chunks.txt").unwrap();
         let mut buf = vec![0u8; 3500];
-        
+
         // Read first chunk (overlapping into second)
         let bytes_read = read_file.read(&mut buf).unwrap();
         assert_eq!(bytes_read, 3500);
         assert!(buf[0..3000].iter().all(|&b| b == 1));
         assert!(buf[3000..3500].iter().all(|&b| b == 2));
-        
+
         // Read second part
         let bytes_read = read_file.read(&mut buf).unwrap();
         assert_eq!(bytes_read, 3500);
         assert!(buf[0..2500].iter().all(|&b| b == 2));
         assert!(buf[2500..3500].iter().all(|&b| b == 3));
-        
+
         // Read final part
         let bytes_read = read_file.read(&mut buf).unwrap();
         assert_eq!(bytes_read, 2000);
         assert!(buf[0..2000].iter().all(|&b| b == 3));
     }
-    
+
     #[test]
     fn test_encrypted_fs_modify_existing_file() {
         let memory = InMemoryFS::new();
         let encrypted = EncryptedFS::new(memory, b"test password");
-        
+
         // Create initial file
         let mut file = encrypted.create("modify.txt").unwrap();
-        file.write_all(b"Original content that will be partially modified").unwrap();
+        file.write_all(b"Original content that will be partially modified")
+            .unwrap();
         file.finalize().unwrap();
-        
+
         // Open for writing, modify middle portion
         let mut file = encrypted.open_write("modify.txt").unwrap();
         file.seek(SeekFrom::Start(16)).unwrap();
         file.write_all(b"MODIFIED").unwrap();
         file.finalize().unwrap();
-        
+
         // Verify content
         let mut read_file = encrypted.open_read("modify.txt").unwrap();
         let mut content = Vec::new();
         read_file.read_to_end(&mut content).unwrap();
-        assert_eq!(content, b"Original content MODIFIEDt will be partially modified");
+        assert_eq!(
+            content,
+            b"Original content MODIFIEDt will be partially modified"
+        );
     }
 }
-
 
 #[cfg(test)]
 mod additional_tests {
@@ -1109,5 +1115,3 @@ mod additional_tests {
         }
     }
 }
-
-

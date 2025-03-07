@@ -2,6 +2,7 @@
 
 use rand::{rngs::OsRng, RngCore, SeedableRng};
 use rand_chacha::ChaCha20Rng;
+use sha2::{Digest, Sha256};
 use std::io::{self, Write};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -53,7 +54,6 @@ pub fn entropy_from_os() -> Vec<u8> {
 
 pub fn rng_from_entropy(entropy: &[u8]) -> ChaCha20Rng {
     // Hash the entropy into a 32-byte seed using SHA-256
-    use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
     hasher.update(entropy);
     let seed = hasher.finalize();

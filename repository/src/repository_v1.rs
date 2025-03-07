@@ -14,8 +14,8 @@ use std::sync::RwLock;
 use rand::{RngCore, SeedableRng};
 //-------------------
 
-use crate::errors::MyResult;
-use crate::io::fs::{Len, SetLen, FS};
+use crab_fs_common::errors::MyResult;
+use crab_fs_common::io::fs::{Len, SetLen, FS};
 // use bincode_maxsize_derive::BincodeMaxSize;
 
 /*
@@ -515,7 +515,7 @@ impl<F: FS> FilesystemWriter<F> {
 
 #[cfg(test)]
 mod FilesystemWriter_tests {
-    use crate::io::fs::DummyFS;
+    use crab_fs_common::io::fs::DummyFS;
 
     use super::*;
     #[test]
@@ -1533,3 +1533,64 @@ impl<F: FS> RepositoryV1<F> {
 }
 
 // ------------------------
+
+// Trait Impls - these need to be here in this crate because of orphan rules ...
+
+#[cfg(feature = "fuser-traits")]
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+#[cfg(feature = "fuser-traits")]
+const BLOCK_SIZE: u64 = 512;
+
+#[cfg(feature = "fuser-traits")]
+impl From<FileKind> for fuser::FileType {
+    fn from(kind: FileKind) -> Self {
+        match kind {
+            FileKind::File => fuser::FileType::RegularFile,
+            FileKind::Directory => fuser::FileType::Directory,
+            FileKind::Symlink => fuser::FileType::Symlink,
+        }
+    }
+}
+
+#[cfg(feature = "fuser-traits")]
+impl From<InodeAttributes> for fuser::FileAttr {
+    fn from(attrs: InodeAttributes) -> Self {
+        return (&attrs).into();
+    }
+}
+
+#[cfg(feature = "fuser-traits")]
+impl From<&InodeAttributes> for fuser::FileAttr {
+    fn from(attrs: &InodeAttributes) -> Self {
+        fuser::FileAttr {
+            ino: attrs.inode,
+            size: attrs.size,
+            blocks: attrs.size.div_ceil(BLOCK_SIZE),
+            atime: system_time_from_time(attrs.last_accessed.0, attrs.last_accessed.1),
+            mtime: system_time_from_time(attrs.last_modified.0, attrs.last_modified.1),
+            ctime: system_time_from_time(
+                attrs.last_metadata_changed.0,
+                attrs.last_metadata_changed.1,
+            ),
+            crtime: SystemTime::UNIX_EPOCH, // todo(macos)
+            kind: attrs.kind.into(),
+            perm: attrs.mode,
+            nlink: attrs.hardlinks,
+            uid: attrs.uid,
+            gid: attrs.gid,
+            rdev: 0, // todo(??)
+            blksize: BLOCK_SIZE as u32,
+            flags: 0, // todo(macos)
+        }
+    }
+}
+
+#[cfg(feature = "fuser-traits")]
+fn system_time_from_time(secs: i64, nsecs: u32) -> SystemTime {
+    if secs >= 0 {
+        UNIX_EPOCH + Duration::new(secs as u64, nsecs)
+    } else {
+        UNIX_EPOCH - Duration::new((-secs) as u64, nsecs)
+    }
+}
