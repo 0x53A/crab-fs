@@ -567,7 +567,6 @@ version = "0.1.0"
 dependencies = [
  "aes",
  "aes-gcm",
- "async-std",
  "backtrace",
  "base64",
  "bincode",
@@ -579,18 +578,12 @@ dependencies = [
  "generic-array 1.2.0",
  "libc",
  "log",
- "mailboxxy",
  "num-traits",
- "pkg-config",
  "rand",
  "rand_chacha",
  "remotefs",
- "remotefs-smb",
- "remotefs-ssh",
  "serde",
  "sha2",
- "smol",
- "tempfile",
  "xts-mode",
 ]
 
@@ -619,6 +612,20 @@ dependencies = [
  "libc",
  "rand",
  "serde",
+]
+
+[[package]]
+name = "crab-fs-tests"
+version = "0.1.0"
+dependencies = [
+ "async-std",
+ "crab-fs",
+ "crab-fs-backend",
+ "crab-fs-common",
+ "crab-fs-repository",
+ "mailboxxy",
+ "smol",
+ "tempfile",
 ]
 
 [[package]]

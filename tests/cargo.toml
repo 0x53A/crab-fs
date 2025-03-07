@@ -1,0 +1,15 @@
+[package]
+name = "crab-fs-tests"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+crab-fs-backend = { path = "../backend" }
+crab-fs-repository = { path = "../repository" }
+crab-fs = { path = "../app" }
+crab-fs-common = { path = "../common" }
+
+mailboxxy = "0.0.3"
+async-std = "1.13.0"
+smol = "2.0.2"
+tempfile = "3.17.1"

@@ -3,5 +3,6 @@ members = [
     "backend",
     "repository",
     "app",
-    "common"
+    "common",
+    "tests"
 ]

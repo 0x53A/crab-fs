@@ -6,8 +6,6 @@ use crab_fs_common::{
 
 use std::io::{Read, Seek, SeekFrom, Write};
 
-mod common;
-
 fn get_steps<F: FS>() -> Vec<Box<dyn Fn(&F) -> Result<(), MyError>>> {
     vec![
         Box::new(|fs: &F| scenario_truncate_then_write(fs)),
