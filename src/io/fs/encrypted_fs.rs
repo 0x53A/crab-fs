@@ -27,14 +27,30 @@ type Aes256Xts = Xts128<Aes256>;
 /// For each 4KB block:
 ///   - Length prefix (4 bytes, little-endian u32)
 ///   - Encrypted data (multiple of 16 bytes, AES blocks)
-///   - HMAC-SHA256 (32 bytes)
 /// 
 /// Each AES block uses a unique tweak derived from:
 ///   - Block index
 ///   - Sub-block index within 4KB block
 
+mod spec {
 
-// stateless en-/decryption engine
+    struct DataBlock {
+        length: u32,
+        data: [u8; super::BLOCK_SIZE],
+    }
+    
+    struct Header {
+        key_validation_hash: [u8; 32],
+    }
+    
+    struct File {
+        header: Header,
+        blocks: [DataBlock; 0]
+    }
+
+}
+    
+
 struct EncryptionEngine {
     cipher: Aes256Xts,
     key_hash: [u8; 32], // Store key hash for file headers
