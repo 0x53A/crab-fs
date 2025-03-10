@@ -112,9 +112,11 @@ fn main() {
             Arg::new("suid")
                 .long("suid")
                 .action(ArgAction::SetTrue)
-                .help("Enable setuid support when run as root"),
+                .help("Enable setuid support (needs to run as root)"),
         );
 
+    let scan_cmd = Command::new("scan")
+        .arg()
     let matches = Command::new("Crab-FS")
         .version(crate_version!())
         .author("Lukas Rieger")
@@ -181,6 +183,7 @@ fn main() {
         return;
     }
 
+
     if let Some(mount) = matches.subcommand_matches("mount") {
         let key_string = mount
             .get_one::<String>("encryption-key")
@@ -241,5 +244,10 @@ fn main() {
                 std::process::exit(2);
             }
         }
+    }
+
+
+    if let Some(scan) = matches.subcommand_matches("scan") {
+
     }
 }
