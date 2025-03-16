@@ -8,6 +8,9 @@
 use fuser::consts::FOPEN_DIRECT_IO;
 #[cfg(feature = "abi-7-26")]
 use fuser::consts::FUSE_HANDLE_KILLPRIV;
+
+use fuser::consts::FUSE_BIG_WRITES;
+
 // #[cfg(feature = "abi-7-31")]
 // use fuser::consts::FUSE_WRITE_KILL_PRIV;
 use fuser::TimeOrNow::Now;
@@ -258,30 +261,17 @@ impl<F: FS> SimpleFS<F> {
         };
         let repository = RepositoryV1::new(fs, repository_options);
 
-        #[cfg(feature = "abi-7-26")]
-        {
-            SimpleFS {
-                options,
-                state,
-                encryption_key,
-                direct_io,
-                suid_support,
-            }
-        }
-        #[cfg(not(feature = "abi-7-26"))]
-        {
-            SimpleFS {
-                options,
-                state,
-                encryption_key,
-                repository,
-            }
+        SimpleFS {
+            options,
+            state,
+            encryption_key,
+            repository,
         }
     }
 
     fn creation_mode(&self, mode: u32) -> u16 {
         #[cfg(feature = "abi-7-26")]
-        let suid_support = self.suid_support;
+        let suid_support = self.options.suid_support;
         #[cfg(not(feature = "abi-7-26"))]
         let suid_support = false;
 

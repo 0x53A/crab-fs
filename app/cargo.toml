@@ -4,9 +4,13 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+crab-fs-common = { path = "../common" }
+crab-fs-repository = { path = "../repository", features = [ "fuser-traits" ] }
+crab-fs-backend = { path = "../backend" }
+
 bincode = "1.3.3"
 env_logger = "0.11.5"
-fuser = { version = "0.15.0", features = [ "abi-7-28" ] }
+fuser = { version = "0.15.0", default-features = true }
 libc = "0.2.165"
 log = "0.4.22"
 serde = { version = "1.0.215", features = ["std", "derive"] }
@@ -25,24 +29,34 @@ aes-gcm = "0.10.3"
 generic-array = "1.2.0"
 xts-mode = "0.5.1"
 aes = "0.8.4"
-crab-fs-common = { path = "../common" }
-crab-fs-repository = { path = "../repository", features = [ "fuser-traits" ] }
-crab-fs-backend = { path = "../backend" }
 
-mailboxxy = "0.0.3"
-async-std = "1.13.0"
-smol = "2.0.2"
-tempfile = "3.17.1"
 
-[profile.release]
-lto = true
-strip = true
 
 [build-dependencies]
 pkg-config = { version = "0.3.14", optional = true }
 
-
-[dev-dependencies]
-#mailboxxy = "0.0.2"
-#async-std = "1.13.0"
-#smol = "2.0.2"
+[features]
+default = ["abi-7-28"]  # Your default ABI level
+abi-7-9 = ["fuser/abi-7-9"]
+abi-7-10 = ["abi-7-9", "fuser/abi-7-10"]
+abi-7-11 = ["abi-7-10", "fuser/abi-7-11"]
+abi-7-12 = ["abi-7-11", "fuser/abi-7-12"]
+abi-7-13 = ["abi-7-12", "fuser/abi-7-13"]
+abi-7-14 = ["abi-7-13", "fuser/abi-7-14"]
+abi-7-15 = ["abi-7-14", "fuser/abi-7-15"]
+abi-7-16 = ["abi-7-15", "fuser/abi-7-16"]
+abi-7-17 = ["abi-7-16", "fuser/abi-7-17"]
+abi-7-18 = ["abi-7-17", "fuser/abi-7-18"]
+abi-7-19 = ["abi-7-18", "fuser/abi-7-19"]
+abi-7-20 = ["abi-7-19", "fuser/abi-7-20"]
+abi-7-21 = ["abi-7-20", "fuser/abi-7-21"]
+abi-7-22 = ["abi-7-21", "fuser/abi-7-22"]
+abi-7-23 = ["abi-7-22", "fuser/abi-7-23"]
+abi-7-24 = ["abi-7-23", "fuser/abi-7-24"]
+abi-7-25 = ["abi-7-24", "fuser/abi-7-25"]
+abi-7-26 = ["abi-7-25", "fuser/abi-7-26"]
+abi-7-27 = ["abi-7-26", "fuser/abi-7-27"]
+abi-7-28 = ["abi-7-27", "fuser/abi-7-28"]
+abi-7-29 = ["abi-7-28", "fuser/abi-7-29"]
+abi-7-30 = ["abi-7-29", "fuser/abi-7-30"]
+abi-7-31 = ["abi-7-30", "fuser/abi-7-31"]

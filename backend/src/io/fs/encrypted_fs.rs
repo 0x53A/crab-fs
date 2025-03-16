@@ -34,16 +34,16 @@ type Aes256Xts = Xts128<Aes256>;
 
 mod spec {
 
-    struct DataBlock {
+    pub struct DataBlock {
         length: u32,
         data: [u8; super::BLOCK_SIZE],
     }
 
-    struct Header {
+    pub struct Header {
         key_validation_hash: [u8; 32],
     }
 
-    struct File {
+    pub struct File {
         header: Header,
         blocks: [DataBlock; 0],
     }

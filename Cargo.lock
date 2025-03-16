@@ -532,7 +532,6 @@ version = "0.1.0"
 dependencies = [
  "aes",
  "aes-gcm",
- "async-std",
  "backtrace",
  "base64",
  "bincode",
@@ -546,7 +545,6 @@ dependencies = [
  "generic-array 1.2.0",
  "libc",
  "log",
- "mailboxxy",
  "num-traits",
  "pkg-config",
  "rand",
@@ -556,8 +554,6 @@ dependencies = [
  "remotefs-ssh",
  "serde",
  "sha2",
- "smol",
- "tempfile",
  "xts-mode",
 ]
 

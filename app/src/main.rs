@@ -69,6 +69,9 @@ fn fuse_allow_other_enabled() -> std::io::Result<bool> {
 }
 
 fn main() {
+
+    println!("Crab-FS: A simple encrypted filesystem");
+
     let gen_key_cmd = Command::new("gen-key");
 
     // Common Args
