@@ -1,9 +1,11 @@
 // this file contains the on-disk serialized structures.
 // MUST NOT be changed, instead, create repository_v2
 
+use fuser::FUSE_ROOT_ID;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+use std::ffi::OsStr;
 //---------------------
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::os::unix::ffi::OsStrExt;
@@ -1593,4 +1595,93 @@ fn system_time_from_time(secs: i64, nsecs: u32) -> SystemTime {
     } else {
         UNIX_EPOCH - Duration::new((-secs) as u64, nsecs)
     }
+}
+
+// ------------------------
+
+// impl<F: FS> RepositoryV1<F> {
+//     fn visit_symlink_internal(
+//         &self,
+//         inode: InodeEntry,
+//         symlink: &OsStr,
+//         visit: Box<dyn RepositoryVisitor>,
+//     ) {
+//         visit.on_inode(inode);
+//     }
+
+//     fn visit_file_internal(
+//         &self,
+//         inode: InodeEntry,
+//         file: FileContent,
+//         visit: Box<dyn RepositoryVisitor>,
+//     ) {
+//         visit.on_inode(inode);
+//     }
+
+//     fn visit_dir_internal(
+//         &self,
+//         inode: InodeEntry,
+//         dir: DirectoryDescriptor,
+//         visit: Box<dyn RepositoryVisitor>,
+//     ) {
+//         visit.on_inode(root_dir);
+
+//         for e in dir {
+//             let (path, (child_inode, child_kind)) = e;
+
+//             let Ok(child_inode_entry) = self.get_inode(child_inode) else {
+//                 // todo: disambiguate between missing file, or corrupt file
+//                 visit.on_missing_inode_file(child_inode);
+//                 continue;
+//             };
+
+//             if child_kind != child_inode_entry.attrs.kind {
+//                 // todo: disambiguate between mismatch between kind in directory tree and inode, or inode header and inode content.
+//                 // the first could happen with incorrect file writes, the second one is quite unlikely.
+//                 visit.on_mismatching_inode_type(child_inode_entry);
+//                 continue;
+//             }
+
+//             match (child_kind, child_inode_entry) {
+//                 (FileKind::Directory, InodeEntry::Directory(dir_entry)) => {
+//                     self.visit_dir_internal(child_inode_entry, dir_entry, visit);
+//                 }
+
+//                 (FileKind::File, InodeEntry::File(file_entry)) => {
+//                     self.visit_file_internal(inode, file_entry, visit);
+//                 }
+
+//                 (FileKind::Symlink, InodeEntry::Symlink(symlink)) => {
+//                     self.visit_symlink_internal(inode, symlink, visit)
+//                 }
+//                 _ => visit.on_mismatching_inode_type(),
+//             }
+//         }
+//     }
+
+//     pub fn visit_repository(&self, visit: Box<dyn RepositoryVisitor>) {
+//         let Ok(root_dir) = self.get_inode(FUSE_ROOT_ID) else {
+//             visit.on_missing_inode_file(FUSE_ROOT_ID);
+//             return;
+//         };
+
+//         match &root_dir.content {
+//             InodeContent::Directory(btree_map) => {
+//                 self.visit_dir_internal(inode, btree_map, visitor)
+//             }
+//             _ => visit.on_mismatching_inode_type(root_dir),
+//         }
+//     }
+// }
+
+// ------------------------
+
+pub trait RepositoryVisitor {
+    /// A well-formed inode was found.
+    /// Note that if the content doesn't match, this will *not* be called,
+    /// 'on_mismatching_inode_type' will be called instead.
+    fn on_inode(&self, path: Vec<Vec<u8>>, inode_entry: InodeEntry);
+    fn on_missing_inode_file(&self, path: Vec<Vec<u8>>, inode: Inode);
+    //fn on_deserialization_error(inode: Inode);
+    fn on_mismatching_inode_type(&self, inode_entry: InodeEntry);
 }

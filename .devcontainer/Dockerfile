@@ -10,6 +10,7 @@ RUN apt-get update && apt-get install -y \
     smbclient \
     libsmbclient \
     libsmbclient-dev \
+    git \
     pkg-config
 
 # Install Rust using rustup

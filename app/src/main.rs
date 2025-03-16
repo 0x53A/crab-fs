@@ -95,8 +95,8 @@ fn main() {
         .arg(arg_dir.clone());
 
     let mount_cmd = Command::new("mount")
-        .arg(arg_key)
-        .arg(arg_dir)
+        .arg(arg_key.clone())
+        .arg(arg_dir.clone())
         .arg(
             Arg::new("mount-point")
                 .long("mount-point")
@@ -115,10 +115,14 @@ fn main() {
             Arg::new("suid")
                 .long("suid")
                 .action(ArgAction::SetTrue)
-                .help("Enable setuid support when run as root"),
+                .help("Enable setuid support (needs to run as root)"),
         );
 
-    let matches = Command::new("Crab-FS")
+    let scan_cmd = Command::new("scan")
+        .arg(arg_key.clone())
+        .arg(arg_dir.clone());
+
+    let mut cmd = Command::new("Crab-FS")
         .version(crate_version!())
         .author("Lukas Rieger")
         .arg(
@@ -130,22 +134,9 @@ fn main() {
         .subcommand(gen_key_cmd)
         .subcommand(init_cmd)
         .subcommand(mount_cmd)
-        .get_matches();
+        .subcommand(scan_cmd);
 
-    if matches.subcommand_matches("gen-key").is_some() {
-        let entropy_keyboard = entropy::entropy_from_keyboard();
-        let entropy_os = entropy::entropy_from_os();
-        let mut rng = entropy::rng_from_entropy(&[entropy_keyboard, entropy_os].concat());
-
-        let mut key: [u8; ENCRYPTION_KEY_LENGTH] = [0u8; ENCRYPTION_KEY_LENGTH];
-        rng.fill_bytes(&mut key);
-
-        let key_string = base64::encode(key);
-        println!("Key:");
-        println!("    {}", key_string);
-        println!();
-        return;
-    }
+    let matches = cmd.clone().get_matches();
 
     let verbosity = matches.get_count("v");
     let log_level = match verbosity {
@@ -160,7 +151,20 @@ fn main() {
         .filter_level(log_level)
         .init();
 
-    if let Some(init) = matches.subcommand_matches("init") {
+    if matches.subcommand_matches("gen-key").is_some() {
+        let entropy_keyboard = entropy::entropy_from_keyboard();
+        let entropy_os = entropy::entropy_from_os();
+        let mut rng = entropy::rng_from_entropy(&[entropy_keyboard, entropy_os].concat());
+
+        let mut key: [u8; ENCRYPTION_KEY_LENGTH] = [0u8; ENCRYPTION_KEY_LENGTH];
+        rng.fill_bytes(&mut key);
+
+        let key_string = base64::encode(key);
+        println!("Key:");
+        println!("    {}", key_string);
+        println!();
+        return;
+    } else if let Some(init) = matches.subcommand_matches("init") {
         let key_string = init
             .get_one::<String>("encryption-key")
             .unwrap()
@@ -182,9 +186,7 @@ fn main() {
             }
         }
         return;
-    }
-
-    if let Some(mount) = matches.subcommand_matches("mount") {
+    } else if let Some(mount) = matches.subcommand_matches("mount") {
         let key_string = mount
             .get_one::<String>("encryption-key")
             .unwrap()
@@ -244,5 +246,9 @@ fn main() {
                 std::process::exit(2);
             }
         }
+    } else if let Some(scan) = matches.subcommand_matches("scan") {
+    } else {
+        cmd.print_help().unwrap();
+        std::process::exit(1);
     }
 }
