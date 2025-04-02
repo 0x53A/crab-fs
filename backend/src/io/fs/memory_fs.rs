@@ -644,7 +644,7 @@ impl FS for InMemoryFS {
                 path: segments,
                 position: 0,
                 permissions: FileHandlePermissions {
-                    read: false,
+                    read: true,
                     write: true,
                 },
             },

@@ -1,9 +1,15 @@
 {
   "build": { "dockerfile": "Dockerfile" },
-
+  "runArgs": ["--env-file", ".devcontainer/.env"],
+  // "postCreateCommand": [
+  //   "npm install -g @anthropic-ai/claude-code"
+  // ],
   "customizations": {
     "vscode": {
       "extensions": ["rust-lang.rust-analyzer"]
     }
+  },
+  "features": {
+    "ghcr.io/anthropics/devcontainer-features/claude-code:1.0": {}
   }
 }
